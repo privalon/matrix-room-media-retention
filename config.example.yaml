@@ -1,0 +1,52 @@
+# Copy to config.yaml and fill in real values. Never commit config.yaml --
+# it contains a real Matrix bot password and a matrix-media-repo admin
+# access token.
+
+# Your homeserver's client-server API URL.
+homeserver_url: "https://matrix.example.org"
+
+# A dedicated bot account -- register it the same way you'd register any
+# other Matrix account. Recommended: give it a name that makes its purpose
+# obvious to anyone who sees it join a room, e.g. @media-retention-bot:...
+bot_user_id: "@media-retention-bot:example.org"
+bot_password: "change-me"
+
+# matrix-media-repo's own base URL. Defaults to homeserver_url if unset --
+# only set this separately if matrix-media-repo is exposed on a different
+# hostname/port than the homeserver's own client-server API.
+media_repo_url: "https://matrix.example.org"
+
+# An access token belonging to an account matrix-media-repo's own config
+# lists as an admin (see matrix-media-repo's own `admins:` config option).
+# This can be the SAME bot account above (add its user ID to
+# matrix-media-repo's admins list, then use its access token here), or a
+# separate dedicated admin account -- your choice.
+media_repo_admin_access_token: "change-me"
+
+# Where the plugin's own per-room policy table (and purge audit log) lives
+# (SQLite file).
+db_path: "media_retention.sqlite3"
+
+# How often the purge scheduler runs, in seconds. Default: hourly.
+scheduler_interval_seconds: 3600
+
+# Minimum Matrix power level required to change a room's retention policy
+# via the bot command (viewing the current policy needs no power level).
+# 50 matches Matrix's own conventional "moderator" threshold.
+minimum_power_level: 50
+
+# The command prefix recognized in any room the bot has joined.
+command_prefix: "!media-retention"
+
+# Safety floor: "retain <duration>" below this many seconds is rejected
+# outright, rather than silently accepted -- closes a real footgun where a
+# typo like "retain 30m" (meaning "retain 30d") would purge nearly
+# everything in the room on the very next scheduler tick. Default: 1 day
+# (86400). Lower this only if you have a genuine sub-day retention need.
+minimum_retain_seconds: 86400
+
+# When true, the scheduler computes and records to the audit log what each
+# retain-policy room *would* have purged, but never actually calls
+# matrix-media-repo's purge endpoint. Use this to validate a newly-set
+# policy before trusting it with real deletions.
+dry_run: false

@@ -1,1 +1,138 @@
 # matrix-room-media-retention
+
+A genuinely matrix-wide, per-room, time-based media retention policy bot.
+
+Set `!media-retention retain 30d` in any room — a native Matrix room, or one
+bridged from Telegram, WhatsApp, Signal, or anything else — and media
+uploaded to that room older than 30 days gets automatically purged.
+**Text, captions, and every other event stay exactly where they are** —
+only the underlying media files are removed.
+
+## Why this exists
+
+Matrix/Synapse has no native way to combine "media only" (not the whole
+message) with "per room" (not the whole server) retention. This plugin
+doesn't try to reinvent that from scratch either — it's a thin scheduling
+and policy layer on top of
+[`matrix-media-repo`](https://github.com/t2bot/matrix-media-repo)'s own
+existing room-scoped purge API
+(`POST /_matrix/media/unstable/admin/purge/room/<room_id>?before_ts=...`).
+No bridge is patched, forked, or has its container image replaced. If your
+homeserver already runs `matrix-media-repo` as its media backend (a
+supported component of `matrix-docker-ansible-deploy` and several other
+Matrix deployment tools), this plugin is the only piece you need to add.
+
+See [`docs/design.md`](docs/design.md) for the full rationale, including
+what was checked before deciding to build this (Synapse's own
+`media_retention` config and `m.room.retention`, and why neither combines
+per-room scoping with media-only deletion).
+
+## How it works
+
+- **A dedicated Matrix bot account.** Invite it to any room you want a
+  retention policy in — it auto-joins. It never joins a room on its own.
+- **Commands, usable by anyone with at least moderator power level in that
+  room** (checked against the room's own `m.room.power_levels`, not any
+  bridge-specific permission system — an operator/admin with a higher
+  power level in a room can use these exactly the same way, no separate
+  admin-only path needed):
+
+  ```
+  !media-retention                  -- show current policy
+  !media-retention retain 30d       -- purge media older than 30 days
+  !media-retention retain 6h        -- ... or 6 hours, or 2w (subject to
+                                        minimum_retain_seconds, see below)
+  !media-retention forever          -- keep everything (the default)
+  !media-retention off              -- same as forever, explicit
+  !media-retention help             -- list these commands
+  ```
+
+  Viewing the current policy and `help` need no power level; only
+  `retain`/`forever`/`off` are gated.
+
+- **A background scheduler** (hourly by default) that, for every room with
+  an explicit `retain` policy, calls `matrix-media-repo`'s own purge API
+  with the right `before_ts`. Rooms left at `forever` (or never configured)
+  are never queried.
+- **A safety floor** on how short a `retain` duration can be
+  (`minimum_retain_seconds`, default 1 day) — closes a real footgun where a
+  typo like `retain 30m` (meaning `retain 30d`) would otherwise purge
+  nearly everything in the room on the very next scheduler tick.
+- **An audit log** of every scheduler pass's outcome per room (room, when,
+  how many objects removed, whether it was a dry run) — a durable record
+  separate from the bot's own "current status" reply, which only shows the
+  most recent purge.
+- **A dry-run mode** (`dry_run: true` in config): the scheduler still
+  computes what each `retain`-policy room would purge and records it to
+  the audit log, but never calls the real purge endpoint. Use this to
+  validate a newly-set policy before trusting it with real deletions.
+
+## Requirements
+
+- A Synapse homeserver with [`matrix-media-repo`](https://github.com/t2bot/matrix-media-repo)
+  configured as its media backend, with the bot's own account (or a
+  separate dedicated admin account) listed in `matrix-media-repo`'s own
+  `admins:` config.
+- Python 3.11+.
+
+## Setup
+
+```bash
+cp config.example.yaml config.yaml   # then fill in real values
+pip install -r requirements.txt
+python3 -m matrix_room_media_retention.main --config config.yaml
+```
+
+Or via Docker:
+
+```bash
+docker build -t matrix-room-media-retention -f docker/Dockerfile .
+docker run -v $(pwd)/data:/data matrix-room-media-retention
+```
+
+(`config.yaml` and the SQLite policy database both live under `/data` —
+mount it as a volume so both survive a container recreate.)
+
+## What this plugin does NOT do
+
+- Does not patch, fork, or modify any Matrix bridge (`mautrix-telegram`,
+  `-whatsapp`, `-signal`, etc.) or the Synapse/Matrix spec itself.
+- Does not touch Matrix event/message retention (`m.room.retention`) —
+  text and captions are never purged by this tool, only already-uploaded
+  media files.
+- Does not decide *whether* media gets uploaded to Matrix in the first
+  place (that's a different, complementary problem — see your own
+  archive-vs-reference design if you want that decision made at ingest
+  time for a specific bridge). This plugin only decides how long media
+  that *has* been uploaded (from any source) sticks around.
+- Does not provide a graphical UI — the in-room command surface is the
+  only control surface in this version.
+- Does not enumerate or apply a policy to every room on the server by
+  default — a room only ever gets a policy once the bot is invited to it
+  and someone explicitly sets one; there is no global default retention
+  window applied automatically.
+- Does not deduplicate awareness across rooms: `matrix-media-repo` itself
+  deduplicates identical files internally, so if the same file is shared
+  into two rooms with different retention policies, the more permissive
+  policy effectively wins for that shared blob. This is a known,
+  documented limitation, not something this plugin attempts to solve.
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+All policy resolution, duration parsing (including the safety floor),
+authorization, the `matrix-media-repo` API client, the audit log, dry-run
+mode, and the scheduler loop are covered by pure unit tests (no live
+homeserver needed). The Matrix bot's own connection/sync handling
+(`bot.py`'s `login_and_sync_forever`/`_on_invite`) is thin `nio` wiring,
+exercised by a live/compatibility pass against a real test homeserver
+instead — see `docs/design.md`'s acceptance criteria for what that pass
+must confirm before a real deploy.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matrix-room-media-retention"
+version = "0.1.0"
+description = "A matrix-wide, per-room, time-based media retention policy bot -- works in any room (native, or bridged from any network) with no bridge patching, by driving matrix-media-repo's own room-scoped purge API."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dependencies = [
+    "matrix-nio>=0.24",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+matrix-room-media-retention = "matrix_room_media_retention.main:main"
+
+[tool.setuptools.packages.find]
+include = ["matrix_room_media_retention*"]
