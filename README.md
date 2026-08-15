@@ -79,10 +79,15 @@ per-room scoping with media-only deletion).
 
   Lets an operator manage every room's retention policy from one place
   instead of inviting the bot into each one individually. **Requires the
-  bot's own account to be a Synapse server admin** (it force-joins the
-  target room just long enough to check the sender's real power level
-  there, then leaves again) — see the security note below before enabling
-  this; it's a real privilege escalation, not a free convenience.
+  bot's own account to be a Synapse server admin** (it reads the target
+  room's real power levels via Synapse's own admin API, which needs no
+  membership at all — no join, no standing presence) — see the security
+  note below before enabling this; it's a real privilege escalation, not a
+  free convenience.
+  - If your homeserver's admin API is itself restricted to a trusted
+    network at the reverse proxy (it should be), this bot's own admin
+    calls need a way to reach it directly too — see `synapse_admin_url` in
+    `config.example.yaml`.
 
 ## Requirements
 
@@ -101,8 +106,8 @@ per-room scoping with media-only deletion).
 ## Security note: the remote command surface and server-admin scope
 
 Synapse's admin flag is binary (all-or-nothing) — there is no way to grant
-"just enough" admin scope for the force-join/read-room-name calls this
-plugin's remote surface needs. An account with this flag can do anything
+"just enough" admin scope for the read-power-levels/read-room-name calls
+this plugin's remote surface needs. An account with this flag can do anything
 any Synapse server admin can do (reset any user's password, deactivate
 accounts, read any room), not just what this plugin actually uses it for.
 

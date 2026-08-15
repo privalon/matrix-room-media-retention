@@ -165,22 +165,16 @@ class TestMinimumRetainFloor:
         assert store.get(room.room_id).retain_seconds == 86400
 
 
-def _fake_state_response(content):
-    resp = mock.Mock(spec=nio.RoomGetStateEventResponse)
-    resp.content = content
-    return resp
-
-
-def _fake_state_error():
-    return mock.Mock(spec=nio.RoomGetStateEventError)
-
-
 ADMIN = "@admin:example.org"
 
 
 class TestRemoteCommands:
     """docs/roadmap/041 §11: `!media-retention <room_id> ...`, DM'd
-    directly to the bot -- for a room it isn't a standing member of."""
+    directly to the bot -- for a room it isn't a member of at all. Reads
+    the target room's power levels via Synapse's own admin API (no join
+    needed at all -- confirmed live 2026-08-15 that Synapse's admin JOIN
+    api refuses a room the calling account has no prior relationship to,
+    exactly the case a never-before-seen remote target room is)."""
 
     def test_untrusted_sender_is_rejected_before_any_matrix_call(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
@@ -188,76 +182,52 @@ class TestRemoteCommands:
             bot._handle_remote_command(sender="@rando:example.org", args=["!room:example.org", "retain", "30d"])
         )
         assert "trusted admin" in reply.lower()
-        bot._synapse_admin.force_join_room.assert_not_called()
+        bot._synapse_admin.get_room_power_levels.assert_not_called()
         assert store.get("!room:example.org") is None
 
-    def test_viewing_a_remote_rooms_status_needs_no_join_or_power_level(self, store):
+    def test_viewing_a_remote_rooms_status_needs_no_power_level_lookup(self, store):
         # Viewing was never gated by power level in-room either; remote
         # viewing is gated only by the sender allowlist, checked above.
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org"]))
         assert "forever" in reply.lower()
-        bot._synapse_admin.force_join_room.assert_not_called()
+        bot._synapse_admin.get_room_power_levels.assert_not_called()
 
-    def test_retain_by_a_room_moderator_succeeds_and_leaves_afterward(self, store):
+    def test_retain_by_a_room_moderator_succeeds(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
-        bot._client.room_get_state_event = mock.AsyncMock(
-            return_value=_fake_state_response({"users": {ADMIN: 50}, "users_default": 0})
-        )
-        bot._client.room_leave = mock.AsyncMock()
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
 
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retain", "30d"]))
 
         assert "30d" in reply
         assert store.get("!room:example.org").retain_seconds == 30 * 86400
-        bot._synapse_admin.force_join_room.assert_called_once_with(
-            room_id="!room:example.org", user_id="@retention-bot:example.org"
-        )
-        bot._client.room_get_state_event.assert_awaited_once_with("!room:example.org", "m.room.power_levels")
-        bot._client.room_leave.assert_awaited_once_with("!room:example.org")
+        bot._synapse_admin.get_room_power_levels.assert_called_once_with("!room:example.org")
 
-    def test_retain_by_a_non_moderator_is_rejected_and_still_leaves(self, store):
+    def test_retain_by_a_non_moderator_is_rejected(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
-        bot._client.room_get_state_event = mock.AsyncMock(
-            return_value=_fake_state_response({"users": {}, "users_default": 0})
-        )
-        bot._client.room_leave = mock.AsyncMock()
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {}, "users_default": 0}
 
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retain", "30d"]))
 
         assert "power level" in reply.lower()
         assert store.get("!room:example.org") is None
-        bot._client.room_leave.assert_awaited_once_with("!room:example.org")
 
-    def test_leaves_even_when_the_state_read_fails(self, store):
-        # The transient force-join must never leave the bot stuck as a
-        # standing member just because the follow-up state read failed.
+    def test_unreadable_power_levels_is_reported_not_silently_authorized(self, store):
+        # A missing/unreadable room must never be treated as "authorized
+        # by default" -- fail closed.
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
-        bot._client.room_get_state_event = mock.AsyncMock(return_value=_fake_state_error())
-        bot._client.room_leave = mock.AsyncMock()
+        bot._synapse_admin.get_room_power_levels.return_value = None
 
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retain", "30d"]))
 
         assert "could not read power levels" in reply.lower()
-        bot._client.room_leave.assert_awaited_once_with("!room:example.org")
-
-    def test_force_join_failure_is_reported_without_ever_calling_leave(self, store):
-        from matrix_room_media_retention.synapse_admin_client import SynapseAdminError
-
-        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
-        bot._synapse_admin.force_join_room.side_effect = SynapseAdminError("boom")
-        bot._client.room_leave = mock.AsyncMock()
-
-        reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retain", "30d"]))
-
-        assert "could not access room" in reply.lower()
-        bot._client.room_leave.assert_not_awaited()
+        assert store.get("!room:example.org") is None
 
     def test_unrecognized_remote_subcommand_says_so(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retian", "30d"]))
         assert "unrecognized" in reply.lower()
-        bot._synapse_admin.force_join_room.assert_not_called()
+        bot._synapse_admin.get_room_power_levels.assert_not_called()
 
     def test_no_trusted_admins_configured_means_no_one_can_use_remote_commands(self, store):
         bot = _make_bot(store)  # trusted_remote_admin_user_ids defaults to []
@@ -324,10 +294,7 @@ class TestOnMessageRouting:
         # The exact shape of the real bug: this homeserver's own room IDs
         # have no `:server_name` suffix at all.
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
-        bot._client.room_get_state_event = mock.AsyncMock(
-            return_value=_fake_state_response({"users": {ADMIN: 50}, "users_default": 0})
-        )
-        bot._client.room_leave = mock.AsyncMock()
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
         bot._client.room_send = mock.AsyncMock()
         room = _fake_room("!anyroom:example.org")
         event = _fake_message_event("!media-retention !GaW2PwvaKrqplAmaq2buq8msVhLDeBU8Cnvqb5kmzMc retain 30d", sender=ADMIN)
@@ -335,14 +302,11 @@ class TestOnMessageRouting:
         asyncio.run(bot._on_message(room, event))
 
         assert store.get("!GaW2PwvaKrqplAmaq2buq8msVhLDeBU8Cnvqb5kmzMc").retain_seconds == 30 * 86400
-        bot._synapse_admin.force_join_room.assert_called_once()
+        bot._synapse_admin.get_room_power_levels.assert_called_once()
 
     def test_classic_room_id_with_a_colon_suffix_also_routes_to_remote_handler(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
-        bot._client.room_get_state_event = mock.AsyncMock(
-            return_value=_fake_state_response({"users": {ADMIN: 50}, "users_default": 0})
-        )
-        bot._client.room_leave = mock.AsyncMock()
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
         bot._client.room_send = mock.AsyncMock()
         room = _fake_room("!anyroom:example.org")
         event = _fake_message_event("!media-retention !target:example.org retain 30d", sender=ADMIN)
@@ -374,4 +338,4 @@ class TestOnMessageRouting:
         asyncio.run(bot._on_message(room, event))
 
         assert store.get("!anyroom:example.org").retain_seconds == 30 * 86400
-        bot._synapse_admin.force_join_room.assert_not_called()
+        bot._synapse_admin.get_room_power_levels.assert_not_called()

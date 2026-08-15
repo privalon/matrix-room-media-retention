@@ -1,22 +1,28 @@
 """Thin client for the Synapse-admin-specific operations the plugin's
-remote (DM-based) command surface needs (docs/roadmap/041 §11): force-
-joining a room the bot isn't already a member of, and reading a room's own
-display name without needing to be a member at all.
+remote (DM-based) command surface needs (docs/roadmap/041 §11): reading a
+room's own current power levels and display name, neither of which
+requires the bot to be a member of that room at all.
 
 Requires the bot's own Matrix account to be a Synapse server admin.
 Synapse has no separate "admin token" concept -- any valid access token
 belonging to an admin-flagged account works for these endpoints too, so
 this reuses the bot's own regular login token rather than a second
 credential.
+
+Deliberately does NOT force-join the room first (an earlier version of
+this module did): confirmed live 2026-08-15 that Synapse's own admin
+join API (`POST /_synapse/admin/v1/join/<room_id>`) refuses a room the
+calling admin account has no prior relationship to at all ("... not in
+room ...") when that account is also the target being joined -- the exact
+case this plugin's own bot hits for a genuinely new, never-before-seen
+room. The admin room-state endpoint below has no such restriction (it's
+designed for exactly this "look at any room without joining it" admin
+use case), so there's no join/leave dance needed here at all.
 """
 
 from __future__ import annotations
 
 import requests
-
-
-class SynapseAdminError(RuntimeError):
-    pass
 
 
 class SynapseAdminClient:
@@ -28,42 +34,31 @@ class SynapseAdminClient:
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._access_token}"}
 
-    def force_join_room(self, *, room_id: str, user_id: str) -> None:
-        """`POST /_synapse/admin/v1/join/<room_id>` -- joins `user_id`
-        (any local user, not necessarily this admin account itself) to
-        the given room without needing an invite (confirmed against
-        Synapse's own admin API docs -- `user_id` is a required body
-        param: Synapse's own admin API lets a server admin force-join
-        *any* local user, so it never assumes "join myself").
-
-        Idempotent, but not in the way a plain join is: confirmed live
-        that Synapse's own admin join API returns 403 M_FORBIDDEN
-        ("... is already in the room.") rather than silently succeeding
-        when the target user is already a member -- e.g. an operator who
-        set a room's policy in-room first (a real, standing invite) and
-        later also wants to manage that same room remotely. Treated the
-        same as success here rather than surfaced as a failure, since the
-        caller only needs the end state ("bot_user_id is a member of
-        room_id"), not whether this specific call is what got it there."""
-        url = f"{self._base_url}/_synapse/admin/v1/join/{room_id}"
-        response = requests.post(
-            url, headers=self._headers(), json={"user_id": user_id}, timeout=self._timeout_seconds
-        )
-        if response.status_code == 200:
-            return
-        if response.status_code == 403 and "already in the room" in response.text:
-            return
-        raise SynapseAdminError(
-            f"Failed to force-join room {room_id!r}: HTTP {response.status_code} {response.text!r}"
-        )
+    def get_room_power_levels(self, room_id: str) -> dict | None:
+        """`GET /_synapse/admin/v1/rooms/<room_id>/state` -- every current
+        state event in the room, admin-only, no membership required at
+        all (confirmed live). Returns the raw `content` dict of the
+        room's own `m.room.power_levels` event -- the exact shape
+        `authorization.is_authorized()` already expects, matching any
+        other Matrix client library's own state-event shape. `None` if
+        the room doesn't exist, has no power_levels event (never true for
+        a real room, but tolerated rather than assumed), or the lookup
+        fails for any other reason."""
+        url = f"{self._base_url}/_synapse/admin/v1/rooms/{room_id}/state"
+        response = requests.get(url, headers=self._headers(), timeout=self._timeout_seconds)
+        if response.status_code != 200:
+            return None
+        for event in response.json().get("state", []):
+            if event.get("type") == "m.room.power_levels":
+                return event.get("content")
+        return None
 
     def get_room_name(self, room_id: str) -> str | None:
         """`GET /_synapse/admin/v1/rooms/<room_id>` -- room metadata,
         including its own display name, without needing to be a member at
-        all (unlike the regular client-server room-state API). Returns
-        `None` if the room has no name set, doesn't exist, or the lookup
-        fails for any other reason -- a missing name is never worth
-        failing the whole `!media-retention list` reply over."""
+        all. Returns `None` if the room has no name set, doesn't exist, or
+        the lookup fails for any other reason -- a missing name is never
+        worth failing the whole `!media-retention list` reply over."""
         url = f"{self._base_url}/_synapse/admin/v1/rooms/{room_id}"
         response = requests.get(url, headers=self._headers(), timeout=self._timeout_seconds)
         if response.status_code != 200:

@@ -145,23 +145,32 @@ room (member list, and every reply the bot posts) — an operator managing
 retention across many rooms from one place, without announcing that fact
 to each room's other members, needed a different mechanism.
 
-**Why a Synapse-admin-flagged force-join, not a standing invite or a
-separate credential:** the authorization model (§3/`authorization.py`) is
+**Why a Synapse-admin-flagged account, not a standing invite or a separate
+credential:** the authorization model (§3/`authorization.py`) is
 deliberately just the room's own `m.room.power_levels` — reusing it for
 the remote surface (rather than inventing a second, remote-specific
 authorization scheme) means one sender allowlist (`trusted_remote_admin_
 user_ids`, who may *attempt* a remote command at all) plus the room's own,
 already-existing power levels (what they're allowed to actually change)
 is enough; no new permission model. Reading a room's own power levels
-without a standing membership requires *some* elevated capability — a
-Synapse server-admin-flagged account can force-join (`POST /_synapse/
-admin/v1/join/<room_id>`), read state normally once joined, then leave
-again, all through the bot's own single account and existing access
-token. No second credential to manage, at the cost of a genuinely bigger
-privilege grant on that one account (see the shipped README's own
-"Security note" section for the tradeoff this creates and how to weigh
-it for a given deployment's own topology).
+without a standing membership requires *some* elevated capability -- a
+Synapse server-admin-flagged account can read a room's full current state
+(`GET /_synapse/admin/v1/rooms/<room_id>/state`), including its
+`m.room.power_levels` event, with no membership at all. No second
+credential to manage, at the cost of a genuinely bigger privilege grant on
+that one account (see the shipped README's own "Security note" section
+for the tradeoff this creates and how to weigh it for a given
+deployment's own topology).
 
-**Why leave, not stay joined:** staying joined after checking would
-reintroduce exactly the "visible in every managed room's member list"
-problem the whole remote surface exists to avoid.
+**An earlier version of this feature force-joined the target room instead
+(`POST /_synapse/admin/v1/join/<room_id>`), then read state normally, then
+left again -- found live 2026-08-15 that Synapse's own admin join API
+refuses when the calling admin account has no prior relationship to the
+room at all AND is also the account being joined** ("... not in room
+..."), exactly the case for a genuinely new, never-before-seen remote
+target room -- the whole point of this feature. The admin state-read
+endpoint has no such restriction (it's designed for exactly this "look at
+any room without joining it" use case), so the join/leave dance was
+removed entirely: simpler, and closes the same "visible in every managed
+room's member list" problem a standing join would have reintroduced,
+without needing a leave step to undo it.

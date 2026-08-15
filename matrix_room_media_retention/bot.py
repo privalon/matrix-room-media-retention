@@ -9,10 +9,10 @@ sender can DM the bot `!media-retention <room_id> retain <dur>` (or
 member of at all, and `!media-retention list` to see every explicitly-
 configured room's policy with its human-readable name. This needs the
 bot's own account to be a Synapse server admin (see synapse_admin_client.py's
-own docstring) -- it force-joins the target room just long enough to read
-its real `power_levels` state and check the sender's authorization there,
-then leaves again, rather than requiring a standing invite into every room
-an operator wants a policy for.
+own docstring): both the room's power levels (to check the sender's
+authorization) and its display name are read via Synapse's own admin API,
+which needs no room membership at all -- no join/leave dance, no standing
+presence in every room an operator wants a policy for.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from .authorization import is_authorized
 from .config import Config
 from .duration import InvalidDurationError, format_duration_seconds, parse_duration_seconds
 from .policy_store import PolicyStore
-from .synapse_admin_client import SynapseAdminClient, SynapseAdminError
+from .synapse_admin_client import SynapseAdminClient
 
 logger = logging.getLogger(__name__)
 
@@ -167,26 +167,14 @@ class MediaRetentionBot:
             )
 
         assert self._synapse_admin is not None  # only called after login_and_sync_forever()
-        try:
-            self._synapse_admin.force_join_room(room_id=room_id, user_id=self._config.bot_user_id)
-        except SynapseAdminError as exc:
-            return f"Could not access room {room_id}: {exc}"
-        try:
-            state = await self._client.room_get_state_event(room_id, "m.room.power_levels")
-            if isinstance(state, nio.RoomGetStateEventError):
-                return f"Could not read power levels for room {room_id}: {state}"
-            authorized = is_authorized(
-                power_levels_content=state.content,
-                sender=sender,
-                minimum_level=self._config.minimum_power_level,
-            )
-        finally:
-            # Transient membership only, for the duration of this one
-            # authorization check -- not a standing presence in every room
-            # an operator manages remotely (the whole point of this
-            # command surface, see this module's own docstring).
-            await self._client.room_leave(room_id)
-
+        power_levels_content = self._synapse_admin.get_room_power_levels(room_id)
+        if power_levels_content is None:
+            return f"Could not read power levels for room {room_id} -- does it exist?"
+        authorized = is_authorized(
+            power_levels_content=power_levels_content,
+            sender=sender,
+            minimum_level=self._config.minimum_power_level,
+        )
         if not authorized:
             return (
                 f"Sorry, changing retention policy for {room_id} needs a power level of at least "

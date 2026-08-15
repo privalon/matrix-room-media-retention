@@ -1,8 +1,6 @@
 from unittest import mock
 
-import pytest
-
-from matrix_room_media_retention.synapse_admin_client import SynapseAdminClient, SynapseAdminError
+from matrix_room_media_retention.synapse_admin_client import SynapseAdminClient
 
 
 def _fake_response(status_code, json_body=None, text=""):
@@ -13,54 +11,53 @@ def _fake_response(status_code, json_body=None, text=""):
     return resp
 
 
-class TestForceJoinRoom:
-    def test_success(self):
-        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
-        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
-            post.return_value = _fake_response(200, {})
-            client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
-        call = post.call_args
-        assert call.args[0] == "https://matrix.example.org/_synapse/admin/v1/join/!room:example.org"
-        assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
-        # Required by Synapse's own admin API -- it can force-join *any*
-        # local user, so it never assumes "join myself".
-        assert call.kwargs["json"] == {"user_id": "@bot:example.org"}
+def _state_response(*events):
+    return _fake_response(200, {"state": list(events)})
 
-    def test_non_200_raises(self):
-        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
-        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
-            post.return_value = _fake_response(403, text="Forbidden")
-            with pytest.raises(SynapseAdminError):
-                client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
 
-    def test_already_in_the_room_is_treated_as_success_not_an_error(self):
-        # Found live 2026-08-15: Synapse's own admin join API returns 403
-        # M_FORBIDDEN rather than silently succeeding when the target user
-        # is already a member -- the caller only cares about the end state
-        # (a member), not whether this call is what achieved it.
+class TestGetRoomPowerLevels:
+    """docs/roadmap/041 §11: reads a room's power_levels via Synapse's own
+    admin room-state endpoint, no membership required at all -- confirmed
+    live 2026-08-15 this is genuinely membership-independent, unlike the
+    admin JOIN endpoint an earlier version of this client used instead
+    (which refused a room the calling account had no prior relationship
+    to, exactly the case for a never-before-seen remote target room)."""
+
+    def test_returns_the_power_levels_content(self):
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
-        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
-            post.return_value = _fake_response(
-                403, text='{"errcode":"M_FORBIDDEN","error":"@bot:example.org is already in the room."}'
+        power_levels = {"users": {"@mod:example.org": 50}, "users_default": 0}
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _state_response(
+                {"type": "m.room.create", "content": {}},
+                {"type": "m.room.power_levels", "content": power_levels},
             )
-            client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")  # must not raise
+            result = client.get_room_power_levels("!room:example.org")
+        assert result == power_levels
+        call = get.call_args
+        assert call.args[0] == "https://matrix.example.org/_synapse/admin/v1/rooms/!room:example.org/state"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
 
-    def test_a_different_403_still_raises(self):
-        # Only the specific "already in the room" 403 is tolerated -- any
-        # other forbidden reason (e.g. a genuinely non-admin token) must
-        # still surface as a real failure.
+    def test_returns_none_when_no_power_levels_event_present(self):
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
-        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
-            post.return_value = _fake_response(403, text='{"errcode":"M_FORBIDDEN","error":"You are not a server admin."}')
-            with pytest.raises(SynapseAdminError):
-                client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _state_response({"type": "m.room.create", "content": {}})
+            assert client.get_room_power_levels("!room:example.org") is None
+
+    def test_returns_none_on_non_200_rather_than_raising(self):
+        # A room that doesn't exist (or the call otherwise failing) must
+        # never be silently treated as "authorized" -- the caller
+        # (bot.py's own _handle_remote_command) fails closed on None.
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _fake_response(404, text="Not found")
+            assert client.get_room_power_levels("!room:example.org") is None
 
     def test_base_url_trailing_slash_stripped(self):
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org/", access_token="tok")
-        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
-            post.return_value = _fake_response(200, {})
-            client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
-        url = post.call_args.args[0]
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _state_response()
+            client.get_room_power_levels("!room:example.org")
+        url = get.call_args.args[0]
         assert "//_synapse" not in url
 
 
