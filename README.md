@@ -66,6 +66,23 @@ per-room scoping with media-only deletion).
   computes what each `retain`-policy room would purge and records it to
   the audit log, but never calls the real purge endpoint. Use this to
   validate a newly-set policy before trusting it with real deletions.
+- **An optional remote command surface** for trusted senders
+  (`trusted_remote_admin_user_ids` in config, empty/disabled by default):
+  DM the bot directly, no invite into the target room required —
+
+  ```
+  !media-retention !roomid:example.org                -- show that room's policy
+  !media-retention !roomid:example.org retain 30d      -- set that room's policy
+  !media-retention !roomid:example.org forever         -- set that room's policy
+  !media-retention list                                -- every configured room + policy
+  ```
+
+  Lets an operator manage every room's retention policy from one place
+  instead of inviting the bot into each one individually. **Requires the
+  bot's own account to be a Synapse server admin** (it force-joins the
+  target room just long enough to check the sender's real power level
+  there, then leaves again) — see the security note below before enabling
+  this; it's a real privilege escalation, not a free convenience.
 
 ## Requirements
 
@@ -74,6 +91,35 @@ per-room scoping with media-only deletion).
   separate dedicated admin account) listed in `matrix-media-repo`'s own
   `admins:` config.
 - Python 3.11+.
+- **Only if `trusted_remote_admin_user_ids` is set** (the remote command
+  surface above): the bot's own account also needs Synapse's server-admin
+  flag (`register_new_matrix_user ... --admin`, or an equivalent admin API
+  call for an already-registered account). Not required for the in-room
+  command surface at all — leave `trusted_remote_admin_user_ids` empty and
+  skip this entirely if you don't need it.
+
+## Security note: the remote command surface and server-admin scope
+
+Synapse's admin flag is binary (all-or-nothing) — there is no way to grant
+"just enough" admin scope for the force-join/read-room-name calls this
+plugin's remote surface needs. An account with this flag can do anything
+any Synapse server admin can do (reset any user's password, deactivate
+accounts, read any room), not just what this plugin actually uses it for.
+
+Before enabling `trusted_remote_admin_user_ids`, make sure:
+- The homeserver's raw admin REST API (`/_synapse/admin/*`, not just an
+  admin UI's own path) is not reachable from the public internet — a
+  reverse-proxy IP allowlist restricting it to your own trusted network is
+  the minimum bar, independent of whether this plugin uses the flag at
+  all.
+- You've weighed the deployment's own topology: if this bot runs
+  co-located with Synapse itself (the common case — same host, same
+  Docker network), a full host compromise already implies full Synapse
+  compromise regardless of this flag. The scope this flag genuinely
+  widens is a narrower one: a vulnerability specific to *this plugin's own
+  code* (a dependency bug, a parsing bug) that leaks its token or achieves
+  code execution *without* a full host compromise. Decide based on that
+  narrower risk, not "is the host secure" alone.
 
 ## Setup
 

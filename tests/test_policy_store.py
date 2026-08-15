@@ -56,6 +56,23 @@ class TestPolicyStore:
         rooms = {p.room_id for p in store.list_retain_policies()}
         assert rooms == {"!a:example.org"}
 
+    def test_list_all_policies_includes_forever_rooms(self, store):
+        # Unlike list_retain_policies() (which the scheduler uses), the
+        # remote `!media-retention list` command wants everything an
+        # operator has explicitly configured, forever included.
+        store.set_retain("!a:example.org", 86400)
+        store.set_forever("!b:example.org")
+        rooms = {p.room_id for p in store.list_all_policies()}
+        assert rooms == {"!a:example.org", "!b:example.org"}
+
+    def test_list_all_policies_excludes_unconfigured_rooms(self, store):
+        store.set_retain("!a:example.org", 86400)
+        rooms = {p.room_id for p in store.list_all_policies()}
+        assert rooms == {"!a:example.org"}
+
+    def test_list_all_policies_empty_when_nothing_configured(self, store):
+        assert store.list_all_policies() == []
+
     def test_record_purge_updates_last_purge_fields(self, store):
         store.set_retain("!room:example.org", 86400)
         store.record_purge("!room:example.org", 5)

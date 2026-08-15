@@ -124,6 +124,19 @@ class PolicyStore:
         ).fetchall()
         return [RoomPolicy(*row) for row in rows]
 
+    def list_all_policies(self) -> list[RoomPolicy]:
+        """Every room with an explicitly-set policy, `forever` included --
+        unlike `list_retain_policies()` (which the scheduler uses and
+        deliberately excludes `forever` rooms), this is for the `!media-
+        retention list` remote command (roadmap/041 §11): an operator
+        reviewing what they've configured wants to see everything they've
+        explicitly set, not just the subset the scheduler acts on."""
+        rows = self._conn.execute(
+            "SELECT room_id, policy, retain_seconds, updated_at, last_purged_at, "
+            "last_purge_count FROM room_policy ORDER BY updated_at DESC"
+        ).fetchall()
+        return [RoomPolicy(*row) for row in rows]
+
     def record_purge(self, room_id: str, media_purged_count: int) -> None:
         """Updates the per-room summary fields (what the bot's own
         `!media-retention` status reply reads) and appends one row to the

@@ -74,6 +74,9 @@ Everything `matrix-media-repo` *doesn't* provide on its own:
    accidental mass-deletion on the very next scheduler tick.
 5. **An audit log** of every scheduler pass's outcome, and a **dry-run**
    mode to preview what a policy would do before it does it for real.
+6. **An optional remote command surface** (§11) for an operator managing
+   many rooms' policies from one place, without a standing bot presence
+   (or a chat trail) in every one of them.
 
 ## Non-goals
 
@@ -125,3 +128,40 @@ Everything `matrix-media-repo` *doesn't* provide on its own:
    to the audit log for every `retain`-policy room, without ever calling
    matrix-media-repo's real purge endpoint or changing any room's
    last-purge summary fields.
+9. With `trusted_remote_admin_user_ids` set, a listed sender can DM the
+   bot `!media-retention <room_id> retain <dur>` (or `forever`/`off`/no
+   args to view) to set a policy for a room the bot has no standing
+   membership in, and `!media-retention list` to see every explicitly-
+   configured room with its own human-readable name. An untrusted sender
+   is rejected before any Matrix API call is made. The bot's own
+   membership in the target room is transient (join, check, leave) for
+   the duration of one authorization check, never a standing presence.
+
+## §11: Remote command surface (found needed 2026-08-15)
+
+Inviting the bot into every room an operator wants a policy for doesn't
+scale past a handful of rooms, and is itself visible to everyone in that
+room (member list, and every reply the bot posts) — an operator managing
+retention across many rooms from one place, without announcing that fact
+to each room's other members, needed a different mechanism.
+
+**Why a Synapse-admin-flagged force-join, not a standing invite or a
+separate credential:** the authorization model (§3/`authorization.py`) is
+deliberately just the room's own `m.room.power_levels` — reusing it for
+the remote surface (rather than inventing a second, remote-specific
+authorization scheme) means one sender allowlist (`trusted_remote_admin_
+user_ids`, who may *attempt* a remote command at all) plus the room's own,
+already-existing power levels (what they're allowed to actually change)
+is enough; no new permission model. Reading a room's own power levels
+without a standing membership requires *some* elevated capability — a
+Synapse server-admin-flagged account can force-join (`POST /_synapse/
+admin/v1/join/<room_id>`), read state normally once joined, then leave
+again, all through the bot's own single account and existing access
+token. No second credential to manage, at the cost of a genuinely bigger
+privilege grant on that one account (see the shipped README's own
+"Security note" section for the tradeoff this creates and how to weigh
+it for a given deployment's own topology).
+
+**Why leave, not stay joined:** staying joined after checking would
+reintroduce exactly the "visible in every managed room's member list"
+problem the whole remote surface exists to avoid.

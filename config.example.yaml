@@ -50,3 +50,20 @@ minimum_retain_seconds: 86400
 # matrix-media-repo's purge endpoint. Use this to validate a newly-set
 # policy before trusting it with real deletions.
 dry_run: false
+
+# Matrix user IDs allowed to use the remote command surface: DM this bot
+# `!media-retention <room_id> retain <dur>` (or `forever`/`off`/no args to
+# view) for a room it isn't a standing member of, or `!media-retention
+# list` to see every explicitly-configured room + its policy. Empty by
+# default -- the whole remote surface is disabled until you list at least
+# one trusted sender here. This is a SEPARATE gate from
+# `minimum_power_level` above: it restricts who can even attempt a remote
+# command at all, regardless of what power level they hold in whatever
+# room they end up targeting.
+#
+# Requires the bot's own account to be a Synapse server admin (it force-
+# joins the target room just long enough to check the sender's real power
+# level there, then leaves again) -- see README.md's security note before
+# enabling this.
+trusted_remote_admin_user_ids: []
+#   - "@you:example.org"

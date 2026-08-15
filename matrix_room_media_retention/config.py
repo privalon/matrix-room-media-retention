@@ -6,7 +6,7 @@ should be readable top to bottom in under a minute.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -27,6 +27,7 @@ class Config:
     command_prefix: str
     minimum_retain_seconds: int
     dry_run: bool
+    trusted_remote_admin_user_ids: list[str] = field(default_factory=list)
 
     @staticmethod
     def load(path: str | Path) -> "Config":
@@ -61,4 +62,14 @@ class Config:
             # what each retain-policy room *would* purge (audit log only)
             # without ever calling matrix-media-repo's real purge endpoint.
             dry_run=bool(raw.get("dry_run", False)),
+            # roadmap/041 §11: sender allowlist for the remote (DM-based,
+            # room-id-targeted) command surface -- `!media-retention
+            # <room_id> retain <dur>` and `!media-retention list`.
+            # Deliberately empty by default (the whole remote surface is
+            # disabled until explicitly opted into), and deliberately a
+            # SEPARATE gate from the in-room power-level check: it
+            # restricts *who can even attempt* a remote, room-id-targeted
+            # command at all, regardless of what power level they hold in
+            # whatever room they end up targeting.
+            trusted_remote_admin_user_ids=list(raw.get("trusted_remote_admin_user_ids") or []),
         )
