@@ -65,7 +65,7 @@ class MediaRetentionBot:
             raise RuntimeError(f"Failed to log in as {self._config.bot_user_id!r}: {login_response}")
         logger.info("Logged in as %s", self._config.bot_user_id)
         self._synapse_admin = SynapseAdminClient(
-            homeserver_url=self._config.homeserver_url, access_token=login_response.access_token
+            homeserver_url=self._config.synapse_admin_url, access_token=login_response.access_token
         )
         await self._client.sync_forever(timeout=30000, full_state=True)
 

@@ -28,6 +28,7 @@ class Config:
     minimum_retain_seconds: int
     dry_run: bool
     trusted_remote_admin_user_ids: list[str] = field(default_factory=list)
+    synapse_admin_url: str = ""
 
     @staticmethod
     def load(path: str | Path) -> "Config":
@@ -72,4 +73,20 @@ class Config:
             # command at all, regardless of what power level they hold in
             # whatever room they end up targeting.
             trusted_remote_admin_user_ids=list(raw.get("trusted_remote_admin_user_ids") or []),
+            # roadmap/041 §11: found live 2026-08-15 that a reverse-proxy
+            # restriction on the homeserver's own admin API (a real,
+            # independently-motivated hardening step -- see that finding's
+            # own note) blocks THIS bot's admin calls too, since its own
+            # network path to homeserver_url (through the public reverse
+            # proxy) isn't guaranteed to originate from wherever that
+            # restriction allows. Falls back to homeserver_url when unset,
+            # for a deployment where the admin API genuinely has no such
+            # restriction -- but a deployment restricting the admin API
+            # (which it should) needs this pointed at whatever internal
+            # address reaches it directly instead (e.g.
+            # "http://matrix-synapse:8008" for a matrix-docker-ansible-
+            # deploy-based homeserver, bypassing the reverse proxy
+            # entirely, the same fix already used for import_synapse's own
+            # -baseUrl).
+            synapse_admin_url=(raw.get("synapse_admin_url") or raw["homeserver_url"]),
         )

@@ -67,3 +67,16 @@ dry_run: false
 # enabling this.
 trusted_remote_admin_user_ids: []
 #   - "@you:example.org"
+
+# Only relevant if trusted_remote_admin_user_ids (above) is set. If your
+# homeserver's admin API (/_synapse/admin/*) is restricted at the reverse
+# proxy (it should be -- see README.md's security note), this bot's own
+# network path to homeserver_url above may not satisfy that restriction
+# (found live: a tailnet-only IP allowlist on the admin API also blocked
+# this bot's own calls, since its traffic didn't originate from a tailnet
+# address). Point this at whatever internal address reaches the admin API
+# directly, bypassing the reverse proxy entirely -- e.g.
+# "http://matrix-synapse:8008" for a matrix-docker-ansible-deploy-based
+# homeserver on the same Docker network. Defaults to homeserver_url if
+# unset.
+synapse_admin_url: "http://matrix-synapse:8008"
