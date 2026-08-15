@@ -89,6 +89,49 @@ per-room scoping with media-only deletion).
     calls need a way to reach it directly too — see `synapse_admin_url` in
     `config.example.yaml`.
 
+## Finding the bot and messaging it directly (DM)
+
+The bot has no identity beyond a normal Matrix account — whatever
+`bot_user_id` is set to in `config.yaml` (e.g.
+`@media-retention-bot:example.org`) is its real, full Matrix ID, usable
+anywhere a Matrix ID is accepted.
+
+**Finding it**, if you didn't set this deployment up yourself:
+- Ask whoever configured it what `bot_user_id` is set to.
+- Or, if the bot is already a member of any room you're in (any room with
+  an explicit retention policy), open that room's member list — its full
+  ID is right there, and its display name generally makes its purpose
+  obvious.
+- Or, if you have Synapse admin access, look it up via the account list
+  (`/_synapse/admin/v2/users`, or the Synapse Admin web UI if installed)
+  for an account matching this deployment's chosen name.
+
+**Messaging it directly**, once you have that ID: every command under
+"How it works" above — both the in-room ones and, if enabled, the remote
+room-id-targeted ones — also works in a plain direct message, not just
+inside a room the bot has been invited to.
+
+1. In your Matrix client, start a new direct message the same way you
+   would with any person — e.g. in Element, the "+" next to
+   "People"/"Direct Messages" → "Start new chat", or "New message".
+2. Enter the bot's full Matrix ID from above, not just a display name —
+   e.g. `@media-retention-bot:example.org`.
+3. Send a command as a normal message in that DM, e.g.
+   `!media-retention help` or `!media-retention list`.
+
+The bot auto-accepts the DM the moment your client creates it — same
+auto-join behaviour as being invited into a room (see "How it works"
+above) — so there is no separate "accept" step on its side; your first
+message goes straight through as soon as the room shows as joined in your
+client.
+
+One thing worth knowing once you're in the DM: commands **without** a
+room ID (`!media-retention help`, `!media-retention list`) work for
+anyone who can reach the bot; commands **with** a room ID
+(`!media-retention !roomid:example.org retain 30d`) are the remote
+command surface, gated by `trusted_remote_admin_user_ids` — see the
+security note below.
+
 ## Requirements
 
 - A Synapse homeserver with [`matrix-media-repo`](https://github.com/t2bot/matrix-media-repo)
