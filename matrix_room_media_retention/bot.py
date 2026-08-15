@@ -78,7 +78,11 @@ class MediaRetentionBot:
             authorized = is_authorized(
                 power_levels_content={
                     "users": power_levels.users,
-                    "users_default": power_levels.users_default,
+                    # nio's own PowerLevels dataclass nests this under
+                    # `.defaults` (a DefaultLevels object), not a flat
+                    # `.users_default` attribute -- confirmed directly
+                    # against nio 0.26.0's own source (nio/rooms.py).
+                    "users_default": power_levels.defaults.users_default,
                 },
                 sender=sender,
                 minimum_level=self._config.minimum_power_level,

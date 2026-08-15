@@ -51,11 +51,17 @@ def bot(store):
 
 
 def _fake_room(room_id="!room:example.org", *, moderator_users=None):
+    # Shaped to match nio's real PowerLevels dataclass (nio/rooms.py) --
+    # `users_default` nests under `.defaults` (a DefaultLevels object), not
+    # a flat attribute. A prior version of this fixture used a flat mock
+    # attribute here, which masked a real bot.py bug (AttributeError,
+    # found live 2026-08-15) that no test caught until then.
     room = mock.Mock()
     room.room_id = room_id
     power_levels = mock.Mock()
     power_levels.users = moderator_users or {}
-    power_levels.users_default = 0
+    power_levels.defaults = mock.Mock()
+    power_levels.defaults.users_default = 0
     room.power_levels = power_levels
     return room
 

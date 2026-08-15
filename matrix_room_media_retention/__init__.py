@@ -3,4 +3,4 @@ time-based media retention policy bot for Synapse homeservers running
 matrix-media-repo as their media backend.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
