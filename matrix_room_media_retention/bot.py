@@ -86,13 +86,17 @@ class MediaRetentionBot:
         args = body[len(prefix):].strip().split()
         if args and args[0] == "list":
             reply = await self._handle_list_command(sender=event.sender)
-        elif args and args[0].startswith("!") and ":" in args[0]:
-            # A Matrix room ID always starts with `!` and contains `:`
-            # (server_name) -- unambiguous against every real subcommand
-            # keyword, so no separate "is this a DM" detection is needed;
-            # a room-id-shaped first argument always means "remote,
-            # room-id-targeted command", regardless of which room (a DM or
-            # otherwise) the message itself arrived in.
+        elif args and args[0].startswith("!"):
+            # The `!` sigil is the one part of Matrix's room ID grammar
+            # guaranteed not to change across room versions -- confirmed
+            # live 2026-08-15 against this exact homeserver that the
+            # `:server_name` suffix classic room IDs have is NOT present
+            # on this homeserver's own newly-created rooms (a newer room
+            # version's own ID format), so checking for `:` too would
+            # have made every real remote command silently fall through
+            # to "unrecognized". `!` alone is unambiguous against every
+            # real subcommand keyword (none of retain/forever/off/help/
+            # list start with it), so no `:` check is needed anyway.
             reply = await self._handle_remote_command(sender=event.sender, args=args)
         else:
             reply = self._handle_command(room=room, sender=event.sender, args=args)

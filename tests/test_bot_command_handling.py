@@ -299,3 +299,77 @@ class TestListCommand:
 
         assert "!a:example.org" in reply
         assert "(no name)" in reply
+
+
+def _fake_message_event(body, sender="@anyone:example.org"):
+    event = mock.Mock(spec=nio.RoomMessageText)
+    event.body = body
+    event.sender = sender
+    return event
+
+
+class TestOnMessageRouting:
+    """Exercises _on_message()'s own dispatch decision directly -- found
+    live 2026-08-15 that this had zero test coverage at all, which is
+    exactly how a real routing bug slipped through: room IDs on some
+    homeservers (a newer room version's own ID format, confirmed live)
+    have no `:server_name` suffix at all, unlike the classic
+    `!opaque:server_name` shape -- a first version of the room-id
+    detection here required a `:` and silently misrouted every remote
+    command to "unrecognized" as a result."""
+
+    def test_room_id_without_a_colon_suffix_still_routes_to_remote_handler(self, store):
+        # The exact shape of the real bug: this homeserver's own room IDs
+        # have no `:server_name` suffix at all.
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._client.room_get_state_event = mock.AsyncMock(
+            return_value=_fake_state_response({"users": {ADMIN: 50}, "users_default": 0})
+        )
+        bot._client.room_leave = mock.AsyncMock()
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!anyroom:example.org")
+        event = _fake_message_event("!media-retention !GaW2PwvaKrqplAmaq2buq8msVhLDeBU8Cnvqb5kmzMc retain 30d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        assert store.get("!GaW2PwvaKrqplAmaq2buq8msVhLDeBU8Cnvqb5kmzMc").retain_seconds == 30 * 86400
+        bot._synapse_admin.force_join_room.assert_called_once()
+
+    def test_classic_room_id_with_a_colon_suffix_also_routes_to_remote_handler(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._client.room_get_state_event = mock.AsyncMock(
+            return_value=_fake_state_response({"users": {ADMIN: 50}, "users_default": 0})
+        )
+        bot._client.room_leave = mock.AsyncMock()
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!anyroom:example.org")
+        event = _fake_message_event("!media-retention !target:example.org retain 30d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        assert store.get("!target:example.org").retain_seconds == 30 * 86400
+
+    def test_list_routes_to_the_list_handler_not_the_in_room_handler(self, store):
+        store.set_retain("!a:example.org", 86400)
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._synapse_admin.get_room_name.return_value = "Some Room"
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!anyroom:example.org")
+        event = _fake_message_event("!media-retention list", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        sent_body = bot._client.room_send.call_args.kwargs["content"]["body"]
+        assert "!a:example.org" in sent_body
+        assert "Some Room" in sent_body
+
+    def test_a_plain_subcommand_still_routes_to_the_in_room_handler(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!anyroom:example.org", moderator_users={ADMIN: 50})
+        event = _fake_message_event("!media-retention retain 30d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        assert store.get("!anyroom:example.org").retain_seconds == 30 * 86400
+        bot._synapse_admin.force_join_room.assert_not_called()
