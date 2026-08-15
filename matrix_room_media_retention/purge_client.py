@@ -80,24 +80,46 @@ class MediaRepoPurgeClient:
         "Per-upload usage (batch of uploads / single upload)") -- per-MXC
         `size_bytes`/`created_ts`/etc., used to compute a room's total
         media size and oldest-file date from the MXC list
-        `SynapseAdminClient.get_room_media_mxcs()` returns. The
-        `<server_name>` path segment is a required part of the URL but
-        does not scope the response -- confirmed against the same docs,
-        the `?mxc=` params are what actually select which objects come
-        back -- so any real server name this repository administrator
-        account can query works; `_` is used here as a placeholder.
+        `SynapseAdminClient.get_room_media_mxcs()` returns.
+
+        Found live 2026-08-15: the `<server_name>` path segment is NOT a
+        placeholder -- matrix-media-repo rejects the request outright
+        ("MXC URIs must match the requested server") unless it matches
+        every requested MXC's own domain. A room can reference media from
+        more than one domain (local media plus anything federated/remote),
+        so this groups `mxcs` by their own domain and issues one request
+        per distinct domain, merging the results -- not a single call with
+        a fixed/placeholder server name, which silently returned nothing
+        for every room until this was found.
+
         Returns an empty dict for an empty `mxcs` list (no request made at
-        all -- nothing to ask about) or on any failure."""
+        all -- nothing to ask about); a malformed MXC or a failed request
+        for one domain is skipped rather than failing the whole batch."""
         if not mxcs:
             return {}
-        url = f"{self._base_url}/_matrix/media/unstable/admin/usage/_/uploads"
-        response = requests.get(
-            url,
-            params=[("mxc", mxc) for mxc in mxcs],
-            headers={"Authorization": f"Bearer {self._access_token}"},
-            timeout=self._timeout_seconds,
-        )
-        if response.status_code != 200:
-            return {}
-        body = response.json()
-        return body if isinstance(body, dict) else {}
+
+        mxcs_by_domain: dict[str, list[str]] = {}
+        for mxc in mxcs:
+            # mxc://<domain>/<media_id> -- domain is the one part of this
+            # URI shape that never itself contains a "/".
+            without_scheme = mxc[len("mxc://"):] if mxc.startswith("mxc://") else mxc
+            domain = without_scheme.split("/", 1)[0]
+            if not domain:
+                continue
+            mxcs_by_domain.setdefault(domain, []).append(mxc)
+
+        result: dict[str, dict] = {}
+        for domain, domain_mxcs in mxcs_by_domain.items():
+            url = f"{self._base_url}/_matrix/media/unstable/admin/usage/{domain}/uploads"
+            response = requests.get(
+                url,
+                params=[("mxc", mxc) for mxc in domain_mxcs],
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                timeout=self._timeout_seconds,
+            )
+            if response.status_code != 200:
+                continue
+            body = response.json()
+            if isinstance(body, dict):
+                result.update(body)
+        return result

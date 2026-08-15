@@ -77,7 +77,7 @@ class TestGetUsageForMxcs:
         assert result == {}
         get.assert_not_called()
 
-    def test_sends_one_repeated_mxc_param_per_uri(self):
+    def test_sends_one_repeated_mxc_param_per_uri_for_a_single_domain(self):
         client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
         body = {
             "mxc://example.org/aaa": {"size_bytes": 100, "created_ts": 1000},
@@ -88,7 +88,44 @@ class TestGetUsageForMxcs:
             result = client.get_usage_for_mxcs(["mxc://example.org/aaa", "mxc://example.org/bbb"])
         assert result == body
         call = get.call_args
+        assert call.args[0] == "https://media.example.org/_matrix/media/unstable/admin/usage/example.org/uploads"
         assert call.kwargs["params"] == [("mxc", "mxc://example.org/aaa"), ("mxc", "mxc://example.org/bbb")]
+
+    def test_uses_the_real_domain_in_the_url_not_a_placeholder(self):
+        # Found live 2026-08-15: matrix-media-repo rejects the request
+        # outright ("MXC URIs must match the requested server") unless the
+        # <server_name> path segment matches every requested MXC's own
+        # domain -- a fixed placeholder silently returned nothing for
+        # every room until this was found and fixed.
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        with mock.patch("matrix_room_media_retention.purge_client.requests.get") as get:
+            get.return_value = _fake_response(200, {})
+            client.get_usage_for_mxcs(["mxc://matrix.babenko.live/abc123"])
+        call = get.call_args
+        assert call.args[0] == "https://media.example.org/_matrix/media/unstable/admin/usage/matrix.babenko.live/uploads"
+
+    def test_groups_mxcs_by_domain_into_separate_requests(self):
+        # A room can reference media from more than one domain (local plus
+        # federated/remote) -- a single request with one server_name would
+        # reject the mismatched ones.
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        local_body = {"mxc://local.example.org/aaa": {"size_bytes": 100, "created_ts": 1000}}
+        remote_body = {"mxc://remote.example.org/bbb": {"size_bytes": 200, "created_ts": 2000}}
+        with mock.patch("matrix_room_media_retention.purge_client.requests.get") as get:
+            get.side_effect = [_fake_response(200, local_body), _fake_response(200, remote_body)]
+            result = client.get_usage_for_mxcs(["mxc://local.example.org/aaa", "mxc://remote.example.org/bbb"])
+        assert result == {**local_body, **remote_body}
+        assert get.call_count == 2
+        requested_domains = {call.args[0].split("/usage/")[1].split("/uploads")[0] for call in get.call_args_list}
+        assert requested_domains == {"local.example.org", "remote.example.org"}
+
+    def test_one_domains_failure_does_not_block_the_others(self):
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        remote_body = {"mxc://remote.example.org/bbb": {"size_bytes": 200, "created_ts": 2000}}
+        with mock.patch("matrix_room_media_retention.purge_client.requests.get") as get:
+            get.side_effect = [_fake_response(500, text="oops"), _fake_response(200, remote_body)]
+            result = client.get_usage_for_mxcs(["mxc://local.example.org/aaa", "mxc://remote.example.org/bbb"])
+        assert result == remote_body
 
     def test_returns_empty_dict_on_non_200_rather_than_raising(self):
         client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
