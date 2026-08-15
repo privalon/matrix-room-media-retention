@@ -43,6 +43,13 @@ _JOIN_GREETING = (
 # to enforce a retention policy, not to chat.
 _GREETING_WORDS = {"hi", "hello", "hey", "hiya", "howdy", "yo", "sup"}
 
+_MATRIX_TO_PREFIX = "https://matrix.to/#/"
+
+# DM-only shorthand for the full command_prefix, on the remote command
+# surface specifically -- see _matched_prefix()'s own docstring for why
+# this can never collide with a real `!room_id` argument.
+_SHORT_REMOTE_PREFIX = "!"
+
 _HELP_TEXT = (
     "Commands (in a room this bot has joined):\n"
     "!media-retention                  -- show current policy\n"
@@ -52,12 +59,30 @@ _HELP_TEXT = (
     "!media-retention off              -- same as forever, explicit\n"
     "!media-retention help             -- this message\n"
     "\n"
-    "Remote commands (DM this bot directly, trusted senders only):\n"
-    "!media-retention <room_id>              -- show that room's policy\n"
-    "!media-retention <room_id> retain <dur> -- set that room's policy\n"
-    "!media-retention <room_id> forever      -- set that room's policy\n"
-    "!media-retention list                   -- every configured room + policy"
+    "Remote commands (DM this bot directly, trusted senders only) --\n"
+    "<room> is a room ID (!opaque or !opaque:server) or a matrix.to link,\n"
+    "e.g. https://matrix.to/#/!opaque:server?via=example.org:\n"
+    "!media-retention <room>              -- show that room's policy\n"
+    "!media-retention <room> retain <dur> -- set that room's policy\n"
+    "!media-retention <room> forever      -- set that room's policy\n"
+    "!media-retention list                -- every configured room + policy\n"
+    "In a DM specifically, '!' alone also works as a shorthand for\n"
+    "'!media-retention', e.g. '! <room> retain 30d'."
 )
+
+
+def _extract_room_id(token: str) -> str:
+    """Unwraps a matrix.to link (e.g.
+    `https://matrix.to/#/!room:server?via=example.org`, optionally with a
+    trailing `/$event_id`) down to the bare room ID. A plain room ID
+    passed in directly (with or without a `:server_name` suffix) is
+    returned unchanged, since none of `https://matrix.to/#/`, `?`, or `/`
+    ever appear in one."""
+    if token.startswith(_MATRIX_TO_PREFIX):
+        token = token[len(_MATRIX_TO_PREFIX):]
+    token = token.split("?", 1)[0]
+    token = token.split("/", 1)[0]
+    return token
 
 
 class MediaRetentionBot:
@@ -102,9 +127,9 @@ class MediaRetentionBot:
     async def _on_message(self, room: nio.MatrixRoom, event: nio.RoomMessageText) -> None:
         if event.sender == self._config.bot_user_id:
             return  # never react to its own messages
-        prefix = self._config.command_prefix
         body = (event.body or "").strip()
-        if not (body == prefix or body.startswith(prefix + " ")):
+        matched_prefix = self._matched_prefix(room=room, body=body)
+        if matched_prefix is None:
             reply = self._friendly_dm_reply(room=room, body=body)
             if reply is not None:
                 await self._client.room_send(
@@ -114,10 +139,10 @@ class MediaRetentionBot:
                 )
             return
 
-        args = body[len(prefix):].strip().split()
+        args = body[len(matched_prefix):].strip().split()
         if args and args[0] == "list":
             reply = await self._handle_list_command(sender=event.sender)
-        elif args and args[0].startswith("!"):
+        elif args and (args[0].startswith("!") or args[0].startswith(_MATRIX_TO_PREFIX)):
             # The `!` sigil is the one part of Matrix's room ID grammar
             # guaranteed not to change across room versions -- confirmed
             # live 2026-08-15 against this exact homeserver that the
@@ -127,8 +152,11 @@ class MediaRetentionBot:
             # have made every real remote command silently fall through
             # to "unrecognized". `!` alone is unambiguous against every
             # real subcommand keyword (none of retain/forever/off/help/
-            # list start with it), so no `:` check is needed anyway.
-            reply = await self._handle_remote_command(sender=event.sender, args=args)
+            # list start with it), so no `:` check is needed anyway. A
+            # matrix.to link is recognized the same way and unwrapped to
+            # the bare room ID before routing.
+            normalized_args = [_extract_room_id(args[0]), *args[1:]]
+            reply = await self._handle_remote_command(sender=event.sender, args=normalized_args)
         else:
             reply = self._handle_command(room=room, sender=event.sender, args=args)
         await self._client.room_send(
@@ -136,6 +164,27 @@ class MediaRetentionBot:
             message_type="m.room.message",
             content={"msgtype": "m.notice", "body": reply},
         )
+
+    def _matched_prefix(self, *, room: nio.MatrixRoom, body: str) -> str | None:
+        """Returns the exact prefix string `body` used (so the caller
+        strips precisely that many characters), or None if it matches
+        neither. The real `command_prefix` always works; a bare "!" is
+        also accepted, but only in a DM-sized room (bot plus at most one
+        other member -- same detection as _friendly_dm_reply), as a
+        shorthand for the remote command surface specifically. This can
+        never collide with a real `!room_id` argument (e.g. "!media
+        -retention !roomid:server retain 30d" typed as just
+        "!roomid:server retain 30d"): a bare room ID is never followed by
+        a space right after its own leading "!", so it never matches
+        `_SHORT_REMOTE_PREFIX + " "` in the first place."""
+        prefix = self._config.command_prefix
+        if body == prefix or body.startswith(prefix + " "):
+            return prefix
+        if room.member_count <= 2 and (
+            body == _SHORT_REMOTE_PREFIX or body.startswith(_SHORT_REMOTE_PREFIX + " ")
+        ):
+            return _SHORT_REMOTE_PREFIX
+        return None
 
     def _handle_command(self, *, room: nio.MatrixRoom, sender: str, args: list[str]) -> str:
         if not args:

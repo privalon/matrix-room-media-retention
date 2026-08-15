@@ -83,6 +83,19 @@ per-room scoping with media-only deletion).
   !media-retention list                                -- every configured room + policy
   ```
 
+  The room can also be pasted as a matrix.to link (e.g.
+  `https://matrix.to/#/!roomid:example.org?via=example.org`, with or
+  without the `?via=` part, and with or without a trailing `/$event_id`)
+  instead of a bare room ID — copy-pasted straight out of a client's own
+  "Copy link" action on a room, no manual editing needed.
+
+  In a DM specifically, a bare `!` also works as a shorthand for
+  `!media-retention` on this remote surface, e.g.
+  `! !roomid:example.org retain 30d` — faster to type when managing
+  several rooms in a row. This shorthand only applies in a DM-sized room
+  (this bot plus at most one other person); a real multi-member room
+  never treats a bare `!` as the command prefix.
+
   Lets an operator manage every room's retention policy from one place
   instead of inviting the bot into each one individually. Authorization
   here is the `trusted_remote_admin_user_ids` allowlist alone — the

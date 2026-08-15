@@ -12,7 +12,7 @@ from unittest import mock
 import nio
 import pytest
 
-from matrix_room_media_retention.bot import MediaRetentionBot
+from matrix_room_media_retention.bot import MediaRetentionBot, _extract_room_id
 from matrix_room_media_retention.config import Config
 from matrix_room_media_retention.policy_store import PolicyStore
 
@@ -285,6 +285,33 @@ class TestListCommand:
         assert "(no name)" in reply
 
 
+class TestExtractRoomId:
+    """docs/roadmap/041 follow-up: the remote command surface should
+    accept a matrix.to link the same way it accepts a bare room ID."""
+
+    def test_plain_room_id_without_colon_suffix_unchanged(self):
+        assert _extract_room_id("!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U") == "!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U"
+
+    def test_plain_room_id_with_colon_suffix_unchanged(self):
+        assert _extract_room_id("!target:example.org") == "!target:example.org"
+
+    def test_matrix_to_link_with_via_param(self):
+        link = "https://matrix.to/#/!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U?via=matrix.babenko.live"
+        assert _extract_room_id(link) == "!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U"
+
+    def test_matrix_to_link_without_via_param(self):
+        link = "https://matrix.to/#/!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U"
+        assert _extract_room_id(link) == "!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U"
+
+    def test_matrix_to_link_with_trailing_event_id(self):
+        link = "https://matrix.to/#/!target:example.org/$someevent"
+        assert _extract_room_id(link) == "!target:example.org"
+
+    def test_matrix_to_link_with_colon_suffix_and_via(self):
+        link = "https://matrix.to/#/!target:example.org?via=example.org"
+        assert _extract_room_id(link) == "!target:example.org"
+
+
 class TestFriendlyDmReply:
     """Found live 2026-08-15: a bare "hi" or "help" (no `!media-retention`
     prefix) sent straight to the bot got no reply at all. Scoped to
@@ -363,6 +390,82 @@ class TestOnMessageRouting:
         asyncio.run(bot._on_message(room, event))
 
         assert store.get("!target:example.org").retain_seconds == 30 * 86400
+
+    def test_matrix_to_link_with_via_param_routes_to_remote_handler(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!anyroom:example.org")
+        link = "https://matrix.to/#/!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U?via=matrix.babenko.live"
+        event = _fake_message_event(f"!media-retention {link} retain 1d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        assert store.get("!27OvxT0IrkMt1QaMLoVAiXDqRgSa8mBzTIfDF4hev-U").retain_seconds == 86400
+
+    def test_matrix_to_link_without_via_param_routes_to_remote_handler(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!anyroom:example.org")
+        link = "https://matrix.to/#/!target:example.org"
+        event = _fake_message_event(f"!media-retention {link}", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        sent_body = bot._client.room_send.call_args.kwargs["content"]["body"]
+        assert "forever" in sent_body.lower()
+
+    def test_short_bang_alias_routes_to_remote_handler_in_a_dm(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!dm:example.org", member_count=2)
+        event = _fake_message_event("! !target:example.org retain 30d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        assert store.get("!target:example.org").retain_seconds == 30 * 86400
+
+    def test_short_bang_alias_with_matrix_to_link_in_a_dm(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!dm:example.org", member_count=2)
+        link = "https://matrix.to/#/!target:example.org?via=example.org"
+        event = _fake_message_event(f"! {link} retain 30d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        assert store.get("!target:example.org").retain_seconds == 30 * 86400
+
+    def test_short_bang_alias_has_no_effect_in_a_real_multi_member_room(self, store):
+        # A bare "!" in a real retention-target room must not be
+        # misinterpreted as the command prefix -- only DMs get the
+        # shorthand.
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!group:example.org", member_count=10)
+        event = _fake_message_event("! !target:example.org retain 30d", sender=ADMIN)
+
+        asyncio.run(bot._on_message(room, event))
+
+        bot._client.room_send.assert_not_called()
+        assert store.get("!target:example.org") is None
+
+    def test_bare_room_id_with_no_space_is_never_mistaken_for_the_bang_alias(self, store):
+        # A real room ID always starts with "!" immediately followed by
+        # opaque characters, never a space -- so it must never itself be
+        # treated as the "!" prefix (which would otherwise try to parse
+        # the rest of the same token as a sub-command).
+        bot = _make_bot(store)
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!dm:example.org", member_count=2)
+        event = _fake_message_event("!target:example.org", sender="@someone:example.org")
+
+        asyncio.run(bot._on_message(room, event))
+
+        bot._client.room_send.assert_not_called()
 
     def test_list_routes_to_the_list_handler_not_the_in_room_handler(self, store):
         store.set_retain("!a:example.org", 86400)
