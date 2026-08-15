@@ -29,6 +29,20 @@ from .synapse_admin_client import SynapseAdminClient
 
 logger = logging.getLogger(__name__)
 
+_JOIN_GREETING = (
+    "Hi, I'm the media retention bot. I manage this room's media retention "
+    "policy -- media only, text and captions are never touched. Try "
+    "'!media-retention help' for the full command list, or "
+    "'!media-retention' to see the current policy."
+)
+
+# Recognized only as a friendly nudge in a DM-sized room whose message
+# didn't match the real command prefix (see _on_message/_friendly_dm_reply)
+# -- never in a real multi-member room, where treating every "hi" as
+# directed at the bot would spam a room this bot was invited into purely
+# to enforce a retention policy, not to chat.
+_GREETING_WORDS = {"hi", "hello", "hey", "hiya", "howdy", "yo", "sup"}
+
 _HELP_TEXT = (
     "Commands (in a room this bot has joined):\n"
     "!media-retention                  -- show current policy\n"
@@ -76,11 +90,28 @@ class MediaRetentionBot:
         # wants it in specific rooms simply only invites it there.
         await self._client.join(room.room_id)
         logger.info("Joined room %s after invite", room.room_id)
+        # A single one-time message, not per-message noise -- tells anyone
+        # in the room (DM or a real retention-target room alike) what this
+        # bot is and how to reach it, without needing external docs.
+        await self._client.room_send(
+            room_id=room.room_id,
+            message_type="m.room.message",
+            content={"msgtype": "m.notice", "body": _JOIN_GREETING},
+        )
 
     async def _on_message(self, room: nio.MatrixRoom, event: nio.RoomMessageText) -> None:
+        if event.sender == self._config.bot_user_id:
+            return  # never react to its own messages
         prefix = self._config.command_prefix
         body = (event.body or "").strip()
         if not (body == prefix or body.startswith(prefix + " ")):
+            reply = self._friendly_dm_reply(room=room, body=body)
+            if reply is not None:
+                await self._client.room_send(
+                    room_id=room.room_id,
+                    message_type="m.room.message",
+                    content={"msgtype": "m.notice", "body": reply},
+                )
             return
 
         args = body[len(prefix):].strip().split()
@@ -143,6 +174,29 @@ class MediaRetentionBot:
             f"Unrecognized command {args[0]!r}. Try '{self._config.command_prefix} help' "
             "for the list of commands."
         )
+
+    def _friendly_dm_reply(self, *, room: nio.MatrixRoom, body: str) -> str | None:
+        """Called only for a message that didn't match the real command
+        prefix. Deliberately scoped to DM-sized rooms (bot + at most one
+        other member) -- a real multi-member room (native or bridged) this
+        bot was invited into purely to enforce a retention policy must
+        never get a reply to ordinary conversation, or every "hi" in that
+        room would spam it. A bare greeting or "help" sent straight to the
+        bot with no prefix is a very reasonable first thing for someone to
+        try (found live 2026-08-15: neither got any reply at all), so
+        answer them instead of silently doing nothing."""
+        if room.member_count > 2:
+            return None
+        word = body.strip().lower().rstrip("!.?")
+        if word == "help":
+            return _HELP_TEXT.format(minimum=format_duration_seconds(self._config.minimum_retain_seconds))
+        if word in _GREETING_WORDS:
+            return (
+                "Hi! I'm the media retention bot -- I manage per-room media "
+                f"purging policies. Try '{self._config.command_prefix} help' "
+                "to see what I can do."
+            )
+        return None
 
     async def _handle_remote_command(self, *, sender: str, args: list[str]) -> str:
         # Separate, sender-identity allowlist -- deliberately independent

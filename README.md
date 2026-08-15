@@ -30,7 +30,13 @@ per-room scoping with media-only deletion).
 ## How it works
 
 - **A dedicated Matrix bot account.** Invite it to any room you want a
-  retention policy in — it auto-joins. It never joins a room on its own.
+  retention policy in — it auto-joins. It never joins a room on its own,
+  and posts a one-time greeting explaining itself right after joining.
+- **A friendly reply to a bare "hi"/"help" sent directly in a DM** (no
+  `!media-retention` prefix needed there) — but only in a DM-sized room
+  (the bot plus at most one other person). A real multi-member room this
+  bot was invited into purely to enforce a retention policy never gets a
+  reply to ordinary conversation, only to the real command syntax below.
 - **Commands, usable by anyone with at least moderator power level in that
   room** (checked against the room's own `m.room.power_levels`, not any
   bridge-specific permission system — an operator/admin with a higher

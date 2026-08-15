@@ -59,7 +59,7 @@ def bot(store):
     return _make_bot(store)
 
 
-def _fake_room(room_id="!room:example.org", *, moderator_users=None):
+def _fake_room(room_id="!room:example.org", *, moderator_users=None, member_count=10):
     # Shaped to match nio's real PowerLevels dataclass (nio/rooms.py) --
     # `users_default` nests under `.defaults` (a DefaultLevels object), not
     # a flat attribute. A prior version of this fixture used a flat mock
@@ -72,6 +72,10 @@ def _fake_room(room_id="!room:example.org", *, moderator_users=None):
     power_levels.defaults = mock.Mock()
     power_levels.defaults.users_default = 0
     room.power_levels = power_levels
+    # Defaults to a real multi-member room (10) -- tests exercising the
+    # friendly-DM-reply path override this to <=2 explicitly, matching a
+    # real bot+one-other-person DM.
+    room.member_count = member_count
     return room
 
 
@@ -273,6 +277,43 @@ class TestListCommand:
         assert "(no name)" in reply
 
 
+class TestFriendlyDmReply:
+    """Found live 2026-08-15: a bare "hi" or "help" (no `!media-retention`
+    prefix) sent straight to the bot got no reply at all. Scoped to
+    DM-sized rooms only -- a real multi-member retention-target room must
+    never get a reply to ordinary conversation."""
+
+    def test_greeting_in_a_dm_gets_a_friendly_reply(self, bot):
+        room = _fake_room(member_count=2)
+        reply = bot._friendly_dm_reply(room=room, body="hi")
+        assert reply is not None
+        assert "media retention" in reply.lower()
+        assert bot._config.command_prefix in reply
+
+    def test_bare_help_in_a_dm_shows_the_real_help_text(self, bot):
+        room = _fake_room(member_count=2)
+        reply = bot._friendly_dm_reply(room=room, body="help")
+        for subcommand in ("retain", "forever", "off"):
+            assert subcommand in reply
+
+    def test_greeting_is_case_and_punctuation_insensitive(self, bot):
+        room = _fake_room(member_count=2)
+        assert bot._friendly_dm_reply(room=room, body="Hi!") is not None
+        assert bot._friendly_dm_reply(room=room, body="HELLO") is not None
+
+    def test_unrelated_text_in_a_dm_gets_no_reply(self, bot):
+        room = _fake_room(member_count=2)
+        assert bot._friendly_dm_reply(room=room, body="what's the weather like") is None
+
+    def test_greeting_in_a_real_multi_member_room_gets_no_reply(self, bot):
+        # The whole point of scoping this to DMs: a bridged/native room
+        # this bot was invited into for policy enforcement must not start
+        # replying to ordinary chat.
+        room = _fake_room(member_count=10)
+        assert bot._friendly_dm_reply(room=room, body="hi") is None
+        assert bot._friendly_dm_reply(room=room, body="help") is None
+
+
 def _fake_message_event(body, sender="@anyone:example.org"):
     event = mock.Mock(spec=nio.RoomMessageText)
     event.body = body
@@ -339,3 +380,34 @@ class TestOnMessageRouting:
 
         assert store.get("!anyroom:example.org").retain_seconds == 30 * 86400
         bot._synapse_admin.get_room_power_levels.assert_not_called()
+
+    def test_unprefixed_greeting_in_a_dm_gets_a_reply_via_on_message(self, store):
+        bot = _make_bot(store)
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!dm:example.org", member_count=2)
+        event = _fake_message_event("hi", sender="@someone:example.org")
+
+        asyncio.run(bot._on_message(room, event))
+
+        bot._client.room_send.assert_called_once()
+        assert "media retention" in bot._client.room_send.call_args.kwargs["content"]["body"].lower()
+
+    def test_unprefixed_greeting_in_a_group_room_gets_no_reply_via_on_message(self, store):
+        bot = _make_bot(store)
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!group:example.org", member_count=10)
+        event = _fake_message_event("hi", sender="@someone:example.org")
+
+        asyncio.run(bot._on_message(room, event))
+
+        bot._client.room_send.assert_not_called()
+
+    def test_bot_never_reacts_to_its_own_messages(self, store):
+        bot = _make_bot(store)
+        bot._client.room_send = mock.AsyncMock()
+        room = _fake_room("!dm:example.org", member_count=2)
+        event = _fake_message_event("hi", sender=bot._config.bot_user_id)
+
+        asyncio.run(bot._on_message(room, event))
+
+        bot._client.room_send.assert_not_called()
