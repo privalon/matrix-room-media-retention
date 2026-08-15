@@ -18,23 +18,26 @@ class TestForceJoinRoom:
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
         with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
             post.return_value = _fake_response(200, {})
-            client.force_join_room("!room:example.org")
+            client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
         call = post.call_args
         assert call.args[0] == "https://matrix.example.org/_synapse/admin/v1/join/!room:example.org"
         assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
+        # Required by Synapse's own admin API -- it can force-join *any*
+        # local user, so it never assumes "join myself".
+        assert call.kwargs["json"] == {"user_id": "@bot:example.org"}
 
     def test_non_200_raises(self):
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
         with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
             post.return_value = _fake_response(403, text="Forbidden")
             with pytest.raises(SynapseAdminError):
-                client.force_join_room("!room:example.org")
+                client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
 
     def test_base_url_trailing_slash_stripped(self):
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org/", access_token="tok")
         with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
             post.return_value = _fake_response(200, {})
-            client.force_join_room("!room:example.org")
+            client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
         url = post.call_args.args[0]
         assert "//_synapse" not in url
 

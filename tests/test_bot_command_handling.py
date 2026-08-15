@@ -210,7 +210,9 @@ class TestRemoteCommands:
 
         assert "30d" in reply
         assert store.get("!room:example.org").retain_seconds == 30 * 86400
-        bot._synapse_admin.force_join_room.assert_called_once_with("!room:example.org")
+        bot._synapse_admin.force_join_room.assert_called_once_with(
+            room_id="!room:example.org", user_id="@retention-bot:example.org"
+        )
         bot._client.room_get_state_event.assert_awaited_once_with("!room:example.org", "m.room.power_levels")
         bot._client.room_leave.assert_awaited_once_with("!room:example.org")
 

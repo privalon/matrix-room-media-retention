@@ -168,7 +168,7 @@ class MediaRetentionBot:
 
         assert self._synapse_admin is not None  # only called after login_and_sync_forever()
         try:
-            self._synapse_admin.force_join_room(room_id)
+            self._synapse_admin.force_join_room(room_id=room_id, user_id=self._config.bot_user_id)
         except SynapseAdminError as exc:
             return f"Could not access room {room_id}: {exc}"
         try:
