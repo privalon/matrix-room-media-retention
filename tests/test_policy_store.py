@@ -165,3 +165,31 @@ class TestPurgeAuditLog:
         s2.close()
         assert len(entries) == 1
         assert entries[0].num_removed == 4
+
+
+class TestMeta:
+    """Generic key-value store backing the monthly media-size report's
+    own last-sent timestamp (bot.py's maybe_send_monthly_report())."""
+
+    def test_unknown_key_returns_none(self, store):
+        assert store.get_meta("nonexistent") is None
+
+    def test_set_then_get_roundtrips(self, store):
+        store.set_meta("last_monthly_report_sent_at", "1700000000")
+        assert store.get_meta("last_monthly_report_sent_at") == "1700000000"
+
+    def test_setting_twice_overwrites_not_duplicates(self, store):
+        store.set_meta("k", "first")
+        store.set_meta("k", "second")
+        assert store.get_meta("k") == "second"
+
+    def test_persists_across_reconnect(self, tmp_path):
+        db_path = tmp_path / "test.sqlite3"
+        s1 = PolicyStore(db_path)
+        s1.set_meta("k", "v")
+        s1.close()
+
+        s2 = PolicyStore(db_path)
+        value = s2.get_meta("k")
+        s2.close()
+        assert value == "v"

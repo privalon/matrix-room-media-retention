@@ -45,7 +45,7 @@ def _make_bot(store, *, minimum_retain_seconds=0, trusted_remote_admin_user_ids=
         trusted_remote_admin_user_ids=trusted_remote_admin_user_ids or [],
     )
     with mock.patch("matrix_room_media_retention.bot.nio.AsyncClient"):
-        bot = MediaRetentionBot(config=config, store=store)
+        bot = MediaRetentionBot(config=config, store=store, purge_client=mock.Mock())
     # login_and_sync_forever() normally constructs this after a real login
     # -- tests exercise _handle_remote_command()/_handle_list_command()
     # directly, so it needs to already exist, with its own HTTP calls
@@ -283,6 +283,104 @@ class TestListCommand:
 
         assert "!a:example.org" in reply
         assert "(no name)" in reply
+
+
+class TestTopCommand:
+    """docs/roadmap/041 follow-up: `!media-retention top [N]` -- same
+    trusted-admin gate as `list`, built on the shared
+    build_top_rooms_report() (test_media_size_report.py covers that
+    function's own logic in depth; these tests cover the command-handling
+    wrapper around it: auth, N parsing/validation/cap)."""
+
+    def test_untrusted_sender_is_rejected(self, bot):
+        reply = bot._handle_top_command(sender="@rando:example.org", args=[])
+        assert "trusted admin" in reply.lower() or "only available" in reply.lower()
+
+    def test_defaults_to_top_10_when_no_n_given(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="report") as build:
+            bot._handle_top_command(sender=ADMIN, args=[])
+        build.assert_called_once_with(top_n=10)
+
+    def test_operator_can_specify_n(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="report") as build:
+            bot._handle_top_command(sender=ADMIN, args=["25"])
+        build.assert_called_once_with(top_n=25)
+
+    def test_non_numeric_n_reports_usage_not_a_crash(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        reply = bot._handle_top_command(sender=ADMIN, args=["notanumber"])
+        assert "usage" in reply.lower()
+
+    def test_n_below_one_is_rejected(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        reply = bot._handle_top_command(sender=ADMIN, args=["0"])
+        assert "at least 1" in reply.lower()
+
+    def test_n_above_the_cap_is_clamped_not_rejected(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="report") as build:
+            bot._handle_top_command(sender=ADMIN, args=["999999"])
+        build.assert_called_once_with(top_n=bot._MAX_TOP_N)
+
+
+class TestMonthlyReport:
+    def test_no_trusted_admins_configured_means_no_report_is_built_or_sent(self, store):
+        bot = _make_bot(store)  # trusted_remote_admin_user_ids defaults to []
+        bot._client.room_send = mock.AsyncMock()
+        with mock.patch.object(bot, "_build_top_rooms_report") as build:
+            asyncio.run(bot.maybe_send_monthly_report())
+        build.assert_not_called()
+        bot._client.room_send.assert_not_called()
+
+    def test_sends_when_never_sent_before(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._client.room_send = mock.AsyncMock()
+        bot._get_or_create_dm = mock.AsyncMock(return_value="!dm:example.org")
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="the report"):
+            asyncio.run(bot.maybe_send_monthly_report())
+        bot._client.room_send.assert_called_once()
+        sent_body = bot._client.room_send.call_args.kwargs["content"]["body"]
+        assert "the report" in sent_body
+
+    def test_does_not_resend_before_the_interval_elapses(self, store):
+        import time
+
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        store.set_meta("last_monthly_report_sent_at", str(int(time.time())))
+        bot._client.room_send = mock.AsyncMock()
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="the report"):
+            asyncio.run(bot.maybe_send_monthly_report())
+        bot._client.room_send.assert_not_called()
+
+    def test_updates_the_last_sent_timestamp_after_sending(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
+        bot._client.room_send = mock.AsyncMock()
+        bot._get_or_create_dm = mock.AsyncMock(return_value="!dm:example.org")
+        assert store.get_meta("last_monthly_report_sent_at") is None
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="the report"):
+            asyncio.run(bot.maybe_send_monthly_report())
+        assert store.get_meta("last_monthly_report_sent_at") is not None
+
+    def test_sends_to_every_trusted_admin_separately(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=["@a:example.org", "@b:example.org"])
+        bot._client.room_send = mock.AsyncMock()
+        bot._get_or_create_dm = mock.AsyncMock(side_effect=["!dm-a:example.org", "!dm-b:example.org"])
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="the report"):
+            asyncio.run(bot.maybe_send_monthly_report())
+        assert bot._client.room_send.call_count == 2
+        sent_rooms = {call.kwargs["room_id"] for call in bot._client.room_send.call_args_list}
+        assert sent_rooms == {"!dm-a:example.org", "!dm-b:example.org"}
+
+    def test_one_recipient_failing_does_not_block_the_others(self, store):
+        bot = _make_bot(store, trusted_remote_admin_user_ids=["@a:example.org", "@b:example.org"])
+        bot._client.room_send = mock.AsyncMock()
+        bot._get_or_create_dm = mock.AsyncMock(side_effect=[RuntimeError("boom"), "!dm-b:example.org"])
+        with mock.patch.object(bot, "_build_top_rooms_report", return_value="the report"):
+            asyncio.run(bot.maybe_send_monthly_report())
+        bot._client.room_send.assert_called_once()
+        assert bot._client.room_send.call_args.kwargs["room_id"] == "!dm-b:example.org"
 
 
 class TestExtractRoomId:

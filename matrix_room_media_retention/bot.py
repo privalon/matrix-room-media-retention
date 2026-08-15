@@ -18,16 +18,34 @@ presence in every room an operator wants a policy for.
 from __future__ import annotations
 
 import logging
+import time
 
 import nio
 
 from .authorization import is_authorized
 from .config import Config
 from .duration import InvalidDurationError, format_duration_seconds, parse_duration_seconds
+from .media_size_report import build_top_rooms_report
 from .policy_store import PolicyStore
+from .purge_client import MediaRepoPurgeClient
 from .synapse_admin_client import SynapseAdminClient
 
 logger = logging.getLogger(__name__)
+
+# docs/roadmap/041 follow-up: "once a month" -- checked via elapsed real
+# time against a persisted last-sent timestamp (PolicyStore's meta table),
+# not a fixed asyncio.sleep(), so it survives bot restarts without ever
+# sending early or silently skipping a whole cycle. 30 days is close
+# enough to "a month" for an operator-facing summary; nothing here needs
+# calendar-month precision.
+_MONTHLY_REPORT_INTERVAL_SECONDS = 30 * 24 * 60 * 60
+_MONTHLY_REPORT_TOP_N = 100
+_MONTHLY_REPORT_META_KEY = "last_monthly_report_sent_at"
+# How often the bot's own background loop wakes up to check whether a
+# month has actually elapsed -- deliberately much shorter than the
+# interval itself (checking once a day is cheap and keeps the actual send
+# within a day of the real monthly boundary, not exactly on it).
+_MONTHLY_REPORT_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 
 _JOIN_GREETING = (
     "Hi, I'm the media retention bot. I manage this room's media retention "
@@ -66,6 +84,10 @@ _HELP_TEXT = (
     "!media-retention <room> retain <dur> -- set that room's policy\n"
     "!media-retention <room> forever      -- set that room's policy\n"
     "!media-retention list                -- every configured room + policy\n"
+    "!media-retention top [N]             -- top N rooms (default 10) by\n"
+    "                                         media storage size, each with\n"
+    "                                         its policy + oldest media date,\n"
+    "                                         plus the server's overall total\n"
     "In a DM specifically, '!' alone also works as a shorthand for\n"
     "'!media-retention', e.g. '! <room> retain 30d'."
 )
@@ -86,9 +108,10 @@ def _extract_room_id(token: str) -> str:
 
 
 class MediaRetentionBot:
-    def __init__(self, *, config: Config, store: PolicyStore):
+    def __init__(self, *, config: Config, store: PolicyStore, purge_client: MediaRepoPurgeClient):
         self._config = config
         self._store = store
+        self._purge_client = purge_client
         self._client = nio.AsyncClient(config.homeserver_url, config.bot_user_id)
         self._client.add_event_callback(self._on_invite, nio.InviteEvent)
         self._client.add_event_callback(self._on_message, nio.RoomMessageText)
@@ -142,6 +165,8 @@ class MediaRetentionBot:
         args = body[len(matched_prefix):].strip().split()
         if args and args[0] == "list":
             reply = await self._handle_list_command(sender=event.sender)
+        elif args and args[0] == "top":
+            reply = self._handle_top_command(sender=event.sender, args=args[1:])
         elif args and (args[0].startswith("!") or args[0].startswith(_MATRIX_TO_PREFIX)):
             # The `!` sigil is the one part of Matrix's room ID grammar
             # guaranteed not to change across room versions -- confirmed
@@ -305,6 +330,79 @@ class MediaRetentionBot:
             else:
                 lines.append(f"{policy.room_id} ({name}): retain {format_duration_seconds(policy.retain_seconds)}")
         return "Configured retention policies:\n" + "\n".join(lines)
+
+    _MAX_TOP_N = 200
+
+    def _handle_top_command(self, *, sender: str, args: list[str]) -> str:
+        """`!media-retention top [N]` -- same trusted-admin gate as `list`
+        (roadmap/041 follow-up). N defaults to 10, capped at
+        `_MAX_TOP_N` (an operator asking for the top 100000 rooms is
+        asking for a full server walk with no real ceiling)."""
+        if sender not in self._config.trusted_remote_admin_user_ids:
+            return "Sorry, this command is only available to this bot's configured trusted admins."
+        top_n = 10
+        if args:
+            try:
+                top_n = int(args[0])
+            except ValueError:
+                return f"Usage: {self._config.command_prefix} top [N] -- N must be a whole number."
+            if top_n < 1:
+                return "N must be at least 1."
+        top_n = min(top_n, self._MAX_TOP_N)
+        return self._build_top_rooms_report(top_n=top_n)
+
+    def _build_top_rooms_report(self, *, top_n: int) -> str:
+        assert self._synapse_admin is not None  # only called after login_and_sync_forever()
+        server_name = self._config.bot_user_id.split(":", 1)[1]
+        return build_top_rooms_report(
+            synapse_admin=self._synapse_admin,
+            purge_client=self._purge_client,
+            store=self._store,
+            server_name=server_name,
+            top_n=top_n,
+        )
+
+    async def maybe_send_monthly_report(self) -> None:
+        """Checked periodically (see main.py's own background loop) --
+        sends the top-N-by-media-size report to every trusted remote
+        admin, but only once `_MONTHLY_REPORT_INTERVAL_SECONDS` has
+        actually elapsed since the last send (tracked in the policy
+        store's own meta table so a bot restart never resets the clock or
+        double-sends). No-ops entirely when no trusted admins are
+        configured -- there would be nowhere to send it."""
+        if not self._config.trusted_remote_admin_user_ids:
+            return
+        last_sent_raw = self._store.get_meta(_MONTHLY_REPORT_META_KEY)
+        last_sent = int(last_sent_raw) if last_sent_raw else 0
+        if time.time() - last_sent < _MONTHLY_REPORT_INTERVAL_SECONDS:
+            return
+
+        report = self._build_top_rooms_report(top_n=_MONTHLY_REPORT_TOP_N)
+        for recipient in self._config.trusted_remote_admin_user_ids:
+            try:
+                room_id = await self._get_or_create_dm(recipient)
+                await self._client.room_send(
+                    room_id=room_id,
+                    message_type="m.room.message",
+                    content={"msgtype": "m.notice", "body": f"Monthly media storage report:\n\n{report}"},
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to send monthly media-size report to %s", recipient)
+        self._store.set_meta(_MONTHLY_REPORT_META_KEY, str(int(time.time())))
+
+    async def _get_or_create_dm(self, user_id: str) -> str:
+        """Reuses an existing DM with `user_id` if the bot's own sync
+        state already knows of one, otherwise creates a fresh one -- the
+        monthly report has no existing room to reply into the way an
+        on-demand command does, so it has to actively start the
+        conversation."""
+        for room_id, room in self._client.rooms.items():
+            if room.member_count <= 2 and user_id in room.users:
+                return room_id
+        response = await self._client.room_create(is_direct=True, invite=[user_id])
+        if isinstance(response, nio.RoomCreateError):
+            raise RuntimeError(f"Failed to create DM with {user_id}: {response}")
+        return response.room_id
 
     def _apply_mutating_subcommand(self, *, room_id: str, args: list[str]) -> str:
         """Shared by both the in-room and remote command paths, once

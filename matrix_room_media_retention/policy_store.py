@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS purge_audit_log (
     num_removed INTEGER NOT NULL,
     dry_run INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -72,6 +77,24 @@ class PolicyStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    def get_meta(self, key: str) -> str | None:
+        """Small generic key-value store for durable bot-level state that
+        isn't a per-room policy or an audit entry -- currently just the
+        monthly media-size report's own last-sent timestamp (bot.py's
+        `_maybe_send_monthly_report()`), but deliberately generic rather
+        than a dedicated column/table for that one value, the same way an
+        operator would reach for a settings table rather than a new
+        migration for a single new setting."""
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
 
     def set_retain(self, room_id: str, retain_seconds: int) -> None:
         now = int(time.time())

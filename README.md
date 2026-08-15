@@ -81,7 +81,29 @@ per-room scoping with media-only deletion).
   !media-retention !roomid:example.org retain 30d      -- set that room's policy
   !media-retention !roomid:example.org forever         -- set that room's policy
   !media-retention list                                -- every configured room + policy
+  !media-retention top [N]                             -- top N rooms (default 10, capped
+                                                            at 200) by media storage size,
+                                                            each with its room ID, human
+                                                            name, size, current retention
+                                                            policy, and oldest media file's
+                                                            date -- plus the server's
+                                                            overall total storage used
   ```
+
+  `top`'s room-to-media mapping has no shortcut: matrix-media-repo's own
+  database has no room_id column at all (confirmed directly against its
+  own source, the same `ListMedia()`/`PurgeRoomMedia` mechanism its
+  room-scoped purge endpoint itself uses). Building this report walks
+  every room on the server, asking Synapse's own admin API which media
+  each one's timeline references, then matrix-media-repo's own admin API
+  for those objects' sizes — an O(rooms) series of HTTP calls, not a
+  single cheap query. Fine for an explicit admin command and a monthly
+  background job; not something to run more often than that.
+
+  The same report is also sent proactively once a month to every
+  `trusted_remote_admin_user_ids` recipient (top 100 rooms), no command
+  needed — tracked via a persisted last-sent timestamp (survives bot
+  restarts without ever double-sending or resetting the clock).
 
   The room can also be pasted as a matrix.to link (e.g.
   `https://matrix.to/#/!roomid:example.org?via=example.org`, with or

@@ -1,7 +1,9 @@
 """Thin client for the Synapse-admin-specific operations the plugin's
-remote (DM-based) command surface needs (docs/roadmap/041 §11): reading a
-room's own current power levels and display name, neither of which
-requires the bot to be a member of that room at all.
+remote (DM-based) command surface needs: reading a room's own current
+power levels and display name (docs/roadmap/041 §11), enumerating every
+room on the server, and resolving which media MXC URIs a given room's
+timeline references (both for the top-N-by-media-size report) -- none of
+which requires the bot to be a member of that room at all.
 
 Requires the bot's own Matrix account to be a Synapse server admin.
 Synapse has no separate "admin token" concept -- any valid access token
@@ -64,3 +66,47 @@ class SynapseAdminClient:
         if response.status_code != 200:
             return None
         return response.json().get("name") or None
+
+    def list_all_rooms(self) -> list[dict]:
+        """`GET /_synapse/admin/v1/rooms` (paginated via `from`/`limit`,
+        confirmed against Synapse's own docs/admin_api/rooms.md) -- every
+        room on the server, each entry already including its own `name`
+        (no separate `get_room_name()` call needed per room). Used by the
+        top-N-by-media-size report to enumerate every room to check.
+        Stops and returns whatever was collected so far on any non-200
+        page rather than raising -- a partial report is more useful than
+        none."""
+        rooms: list[dict] = []
+        offset = 0
+        while True:
+            url = f"{self._base_url}/_synapse/admin/v1/rooms"
+            response = requests.get(
+                url, headers=self._headers(), params={"from": offset, "limit": 100}, timeout=self._timeout_seconds
+            )
+            if response.status_code != 200:
+                break
+            body = response.json()
+            rooms.extend(body.get("rooms", []))
+            next_batch = body.get("next_batch")
+            if next_batch is None or next_batch == offset:
+                break
+            offset = next_batch
+        return rooms
+
+    def get_room_media_mxcs(self, room_id: str) -> list[str]:
+        """`GET /_synapse/admin/v1/room/<room_id>/media` -- every MXC URI
+        (local and remote) ever referenced in that room's timeline.
+        Confirmed directly against matrix-media-repo's own source
+        (matrix/requests_admin.go's `ListMedia()`, called from
+        `PurgeRoomMedia` in api/custom/purge.go) as the exact mechanism
+        MMR itself uses to resolve "media in this room" for its own
+        room-scoped purge endpoint -- MMR's own database has no room_id
+        column at all, so this room-to-media mapping only ever exists on
+        the homeserver side. Returns an empty list on any failure (missing
+        room, no media, lookup error) rather than raising."""
+        url = f"{self._base_url}/_synapse/admin/v1/room/{room_id}/media"
+        response = requests.get(url, headers=self._headers(), timeout=self._timeout_seconds)
+        if response.status_code != 200:
+            return []
+        body = response.json()
+        return list(body.get("local", [])) + list(body.get("remote", []))

@@ -84,3 +84,60 @@ class TestGetRoomName:
         with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
             get.return_value = _fake_response(404, text="Not found")
             assert client.get_room_name("!room:example.org") is None
+
+
+class TestListAllRooms:
+    def test_single_page_returns_every_room(self):
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _fake_response(
+                200,
+                {
+                    "rooms": [{"room_id": "!a:example.org", "name": "A"}, {"room_id": "!b:example.org", "name": "B"}],
+                    "next_batch": None,
+                },
+            )
+            rooms = client.list_all_rooms()
+        assert rooms == [{"room_id": "!a:example.org", "name": "A"}, {"room_id": "!b:example.org", "name": "B"}]
+        call = get.call_args
+        assert call.args[0] == "https://matrix.example.org/_synapse/admin/v1/rooms"
+        assert call.kwargs["params"] == {"from": 0, "limit": 100}
+
+    def test_paginates_across_multiple_pages(self):
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        page1 = _fake_response(200, {"rooms": [{"room_id": "!a:example.org", "name": "A"}], "next_batch": 1})
+        page2 = _fake_response(200, {"rooms": [{"room_id": "!b:example.org", "name": "B"}], "next_batch": None})
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.side_effect = [page1, page2]
+            rooms = client.list_all_rooms()
+        assert [r["room_id"] for r in rooms] == ["!a:example.org", "!b:example.org"]
+        assert get.call_count == 2
+        assert get.call_args_list[1].kwargs["params"] == {"from": 1, "limit": 100}
+
+    def test_non_200_page_stops_and_returns_whatever_was_collected(self):
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        page1 = _fake_response(200, {"rooms": [{"room_id": "!a:example.org", "name": "A"}], "next_batch": 1})
+        page2 = _fake_response(500, text="oops")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.side_effect = [page1, page2]
+            rooms = client.list_all_rooms()
+        assert [r["room_id"] for r in rooms] == ["!a:example.org"]
+
+
+class TestGetRoomMediaMxcs:
+    def test_returns_local_and_remote_mxcs_combined(self):
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _fake_response(
+                200, {"local": ["mxc://example.org/aaa"], "remote": ["mxc://other.org/bbb"]}
+            )
+            mxcs = client.get_room_media_mxcs("!room:example.org")
+        assert mxcs == ["mxc://example.org/aaa", "mxc://other.org/bbb"]
+        call = get.call_args
+        assert call.args[0] == "https://matrix.example.org/_synapse/admin/v1/room/!room:example.org/media"
+
+    def test_returns_empty_list_on_non_200_rather_than_raising(self):
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
+            get.return_value = _fake_response(404, text="Not found")
+            assert client.get_room_media_mxcs("!room:example.org") == []

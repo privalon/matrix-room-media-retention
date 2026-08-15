@@ -22,7 +22,7 @@ async def _run(config_path: str) -> None:
         base_url=config.media_repo_url,
         admin_access_token=config.media_repo_admin_access_token,
     )
-    bot = MediaRetentionBot(config=config, store=store)
+    bot = MediaRetentionBot(config=config, store=store, purge_client=purge_client)
 
     if config.dry_run:
         logging.getLogger(__name__).warning(
@@ -37,11 +37,25 @@ async def _run(config_path: str) -> None:
             dry_run=config.dry_run,
         )
     )
+    monthly_report_task = asyncio.create_task(_run_monthly_report_loop(bot))
     try:
         await bot.login_and_sync_forever()
     finally:
         scheduler_task.cancel()
+        monthly_report_task.cancel()
         store.close()
+
+
+async def _run_monthly_report_loop(bot: MediaRetentionBot) -> None:
+    """Checks once a day (bot.py's own `_MONTHLY_REPORT_CHECK_INTERVAL_
+    SECONDS`) whether a month has actually elapsed since the last send --
+    see `MediaRetentionBot.maybe_send_monthly_report()`'s own docstring
+    for why this is elapsed-time-based rather than a bare monthly sleep."""
+    from .bot import _MONTHLY_REPORT_CHECK_INTERVAL_SECONDS
+
+    while True:
+        await asyncio.sleep(_MONTHLY_REPORT_CHECK_INTERVAL_SECONDS)
+        await bot.maybe_send_monthly_report()
 
 
 def main() -> None:
