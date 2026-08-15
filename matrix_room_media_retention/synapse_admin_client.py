@@ -34,16 +34,28 @@ class SynapseAdminClient:
         the given room without needing an invite (confirmed against
         Synapse's own admin API docs -- `user_id` is a required body
         param: Synapse's own admin API lets a server admin force-join
-        *any* local user, so it never assumes "join myself"). Idempotent:
-        joining an already-joined room is a no-op, not an error."""
+        *any* local user, so it never assumes "join myself").
+
+        Idempotent, but not in the way a plain join is: confirmed live
+        that Synapse's own admin join API returns 403 M_FORBIDDEN
+        ("... is already in the room.") rather than silently succeeding
+        when the target user is already a member -- e.g. an operator who
+        set a room's policy in-room first (a real, standing invite) and
+        later also wants to manage that same room remotely. Treated the
+        same as success here rather than surfaced as a failure, since the
+        caller only needs the end state ("bot_user_id is a member of
+        room_id"), not whether this specific call is what got it there."""
         url = f"{self._base_url}/_synapse/admin/v1/join/{room_id}"
         response = requests.post(
             url, headers=self._headers(), json={"user_id": user_id}, timeout=self._timeout_seconds
         )
-        if response.status_code != 200:
-            raise SynapseAdminError(
-                f"Failed to force-join room {room_id!r}: HTTP {response.status_code} {response.text!r}"
-            )
+        if response.status_code == 200:
+            return
+        if response.status_code == 403 and "already in the room" in response.text:
+            return
+        raise SynapseAdminError(
+            f"Failed to force-join room {room_id!r}: HTTP {response.status_code} {response.text!r}"
+        )
 
     def get_room_name(self, room_id: str) -> str | None:
         """`GET /_synapse/admin/v1/rooms/<room_id>` -- room metadata,

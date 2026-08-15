@@ -33,6 +33,28 @@ class TestForceJoinRoom:
             with pytest.raises(SynapseAdminError):
                 client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
 
+    def test_already_in_the_room_is_treated_as_success_not_an_error(self):
+        # Found live 2026-08-15: Synapse's own admin join API returns 403
+        # M_FORBIDDEN rather than silently succeeding when the target user
+        # is already a member -- the caller only cares about the end state
+        # (a member), not whether this call is what achieved it.
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
+            post.return_value = _fake_response(
+                403, text='{"errcode":"M_FORBIDDEN","error":"@bot:example.org is already in the room."}'
+            )
+            client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")  # must not raise
+
+    def test_a_different_403_still_raises(self):
+        # Only the specific "already in the room" 403 is tolerated -- any
+        # other forbidden reason (e.g. a genuinely non-admin token) must
+        # still surface as a real failure.
+        client = SynapseAdminClient(homeserver_url="https://matrix.example.org", access_token="tok")
+        with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
+            post.return_value = _fake_response(403, text='{"errcode":"M_FORBIDDEN","error":"You are not a server admin."}')
+            with pytest.raises(SynapseAdminError):
+                client.force_join_room(room_id="!room:example.org", user_id="@bot:example.org")
+
     def test_base_url_trailing_slash_stripped(self):
         client = SynapseAdminClient(homeserver_url="https://matrix.example.org/", access_token="tok")
         with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.post") as post:
