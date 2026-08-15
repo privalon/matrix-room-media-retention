@@ -220,20 +220,22 @@ class MediaRetentionBot:
                 "for the list of commands."
             )
 
+        # No room-power-level check here (unlike _handle_command's in-room
+        # path) -- found live 2026-08-15: mautrix-whatsapp's own bridged
+        # portal rooms commonly grant every member power level 0 with no
+        # elevated user at all (`"users": {}`, `"users_default": 0` --
+        # confirmed directly against two real portal rooms), which made
+        # the real room owner unable to ever pass a >=50 check there. The
+        # `trusted_remote_admin_user_ids` allowlist just above is already a
+        # stricter, identity-based gate than a room-specific power level
+        # (that's the whole point of this remote surface -- "manage every
+        # room's policy from one place" implies the target room's own
+        # internal power structure shouldn't matter), so re-checking room
+        # power level on top of it was redundant for every native room and
+        # actively broken for a whole class of bridged ones.
         assert self._synapse_admin is not None  # only called after login_and_sync_forever()
-        power_levels_content = self._synapse_admin.get_room_power_levels(room_id)
-        if power_levels_content is None:
-            return f"Could not read power levels for room {room_id} -- does it exist?"
-        authorized = is_authorized(
-            power_levels_content=power_levels_content,
-            sender=sender,
-            minimum_level=self._config.minimum_power_level,
-        )
-        if not authorized:
-            return (
-                f"Sorry, changing retention policy for {room_id} needs a power level of at least "
-                f"{self._config.minimum_power_level} in that room."
-            )
+        if self._synapse_admin.get_room_power_levels(room_id) is None:
+            return f"Could not read room {room_id} -- does it exist?"
         return self._apply_mutating_subcommand(room_id=room_id, args=sub_args)
 
     async def _handle_list_command(self, *, sender: str) -> str:

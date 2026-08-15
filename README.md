@@ -84,12 +84,19 @@ per-room scoping with media-only deletion).
   ```
 
   Lets an operator manage every room's retention policy from one place
-  instead of inviting the bot into each one individually. **Requires the
-  bot's own account to be a Synapse server admin** (it reads the target
-  room's real power levels via Synapse's own admin API, which needs no
-  membership at all — no join, no standing presence) — see the security
-  note below before enabling this; it's a real privilege escalation, not a
-  free convenience.
+  instead of inviting the bot into each one individually. Authorization
+  here is the `trusted_remote_admin_user_ids` allowlist alone — the
+  target room's own power levels are read via Synapse's admin API only to
+  confirm the room actually exists, not to re-gate authorization (found
+  live 2026-08-15: a bridged portal room commonly grants every member,
+  including its real owner, power level 0 with no elevated user at all —
+  re-checking room-level power on top of the allowlist made every such
+  room unmanageable through this surface for no security benefit, since
+  the allowlist is already the stricter, identity-based gate). **Requires
+  the bot's own account to be a Synapse server admin** (the room-lookup
+  call needs no membership at all — no join, no standing presence) — see
+  the security note below before enabling this; it's a real privilege
+  escalation, not a free convenience.
   - If your homeserver's admin API is itself restricted to a trusted
     network at the reverse proxy (it should be), this bot's own admin
     calls need a way to reach it directly too — see `synapse_admin_url` in

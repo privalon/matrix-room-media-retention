@@ -174,11 +174,12 @@ ADMIN = "@admin:example.org"
 
 class TestRemoteCommands:
     """docs/roadmap/041 §11: `!media-retention <room_id> ...`, DM'd
-    directly to the bot -- for a room it isn't a member of at all. Reads
-    the target room's power levels via Synapse's own admin API (no join
-    needed at all -- confirmed live 2026-08-15 that Synapse's admin JOIN
-    api refuses a room the calling account has no prior relationship to,
-    exactly the case a never-before-seen remote target room is)."""
+    directly to the bot -- for a room it isn't a member of at all.
+    Authorization is the trusted_remote_admin_user_ids allowlist alone;
+    the target room's own power levels are only read (via Synapse's admin
+    API, no join needed) to confirm the room actually exists, not to
+    re-gate authorization -- see test_retain_succeeds_even_with_zero_
+    power_level_in_the_target_room for why (found live 2026-08-15)."""
 
     def test_untrusted_sender_is_rejected_before_any_matrix_call(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
@@ -197,7 +198,7 @@ class TestRemoteCommands:
         assert "forever" in reply.lower()
         bot._synapse_admin.get_room_power_levels.assert_not_called()
 
-    def test_retain_by_a_room_moderator_succeeds(self, store):
+    def test_retain_by_a_trusted_admin_succeeds(self, store):
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
         bot._synapse_admin.get_room_power_levels.return_value = {"users": {ADMIN: 50}, "users_default": 0}
 
@@ -207,24 +208,31 @@ class TestRemoteCommands:
         assert store.get("!room:example.org").retain_seconds == 30 * 86400
         bot._synapse_admin.get_room_power_levels.assert_called_once_with("!room:example.org")
 
-    def test_retain_by_a_non_moderator_is_rejected(self, store):
+    def test_retain_succeeds_even_with_zero_power_level_in_the_target_room(self, store):
+        # Found live 2026-08-15: mautrix-whatsapp's own bridged portal
+        # rooms commonly give every member (including the real room owner)
+        # power level 0, with no elevated user at all -- the remote
+        # surface must not re-gate on the target room's own power level on
+        # top of the trusted_remote_admin_user_ids allowlist already
+        # checked above, or every such portal becomes unmanageable via
+        # this surface.
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
         bot._synapse_admin.get_room_power_levels.return_value = {"users": {}, "users_default": 0}
 
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retain", "30d"]))
 
-        assert "power level" in reply.lower()
-        assert store.get("!room:example.org") is None
+        assert "30d" in reply
+        assert store.get("!room:example.org").retain_seconds == 30 * 86400
 
-    def test_unreadable_power_levels_is_reported_not_silently_authorized(self, store):
-        # A missing/unreadable room must never be treated as "authorized
-        # by default" -- fail closed.
+    def test_unreadable_room_is_reported_as_not_found(self, store):
+        # A missing/unreachable room ID (e.g. a typo) is still worth
+        # surfacing -- just not as an authorization failure any more.
         bot = _make_bot(store, trusted_remote_admin_user_ids=[ADMIN])
         bot._synapse_admin.get_room_power_levels.return_value = None
 
         reply = asyncio.run(bot._handle_remote_command(sender=ADMIN, args=["!room:example.org", "retain", "30d"]))
 
-        assert "could not read power levels" in reply.lower()
+        assert "could not read" in reply.lower()
         assert store.get("!room:example.org") is None
 
     def test_unrecognized_remote_subcommand_says_so(self, store):
