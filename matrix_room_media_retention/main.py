@@ -35,6 +35,7 @@ async def _run(config_path: str) -> None:
             purge_client=purge_client,
             interval_seconds=config.scheduler_interval_seconds,
             dry_run=config.dry_run,
+            media_index=bot.media_index,
         )
     )
     monthly_report_task = asyncio.create_task(_run_monthly_report_loop(bot))

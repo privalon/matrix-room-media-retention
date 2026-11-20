@@ -132,3 +132,55 @@ class TestGetUsageForMxcs:
         with mock.patch("matrix_room_media_retention.purge_client.requests.get") as get:
             get.return_value = _fake_response(500, text="oops")
             assert client.get_usage_for_mxcs(["mxc://example.org/aaa"]) == {}
+
+
+class TestRateLimitRetry:
+    def test_usage_retries_on_429_then_succeeds(self):
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        with mock.patch("matrix_room_media_retention.purge_client.requests.get") as get, mock.patch(
+            "matrix_room_media_retention.purge_client.time.sleep"
+        ) as sleep:
+            get.side_effect = [
+                _fake_response(429),
+                _fake_response(429),
+                _fake_response(200, {"mxc://example.org/a": {"size_bytes": 5}}),
+            ]
+            result = client.get_usage_for_mxcs(["mxc://example.org/a"])
+        assert result == {"mxc://example.org/a": {"size_bytes": 5}}
+        assert get.call_count == 3
+        assert sleep.call_count == 2
+
+    def test_usage_gives_up_after_max_attempts(self):
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        with mock.patch("matrix_room_media_retention.purge_client.requests.get") as get, mock.patch(
+            "matrix_room_media_retention.purge_client.time.sleep"
+        ):
+            get.return_value = _fake_response(429)
+            assert client.get_usage_for_mxcs(["mxc://example.org/a"]) == {}
+        assert get.call_count == 6
+
+    def test_purge_room_retries_on_429(self):
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        with mock.patch("matrix_room_media_retention.purge_client.requests.post") as post, mock.patch(
+            "matrix_room_media_retention.purge_client.time.sleep"
+        ):
+            post.side_effect = [_fake_response(429), _fake_response(200, {"num_removed": 3})]
+            assert client.purge_room(room_id="!r:example.org", before_ts_ms=1).num_removed == 3
+
+    def test_purge_room_gives_up_after_repeated_429_with_purge_error(self):
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        with mock.patch("matrix_room_media_retention.purge_client.requests.post") as post, mock.patch(
+            "matrix_room_media_retention.purge_client.time.sleep"
+        ):
+            post.return_value = _fake_response(429, text="rate limited")
+            with pytest.raises(PurgeError):
+                client.purge_room(room_id="!r:example.org", before_ts_ms=1)
+        assert post.call_count == 6
+
+    def test_purge_room_timeout_becomes_purge_error(self):
+        import requests
+
+        client = MediaRepoPurgeClient(base_url="https://media.example.org", admin_access_token="tok")
+        with mock.patch("matrix_room_media_retention.purge_client.requests.post", side_effect=requests.Timeout("slow")):
+            with pytest.raises(PurgeError):
+                client.purge_room(room_id="!r:example.org", before_ts_ms=1)

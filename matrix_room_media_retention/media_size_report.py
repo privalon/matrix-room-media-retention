@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime
 
 from .duration import format_duration_seconds
+from .media_index import MediaIndex
 from .policy_store import PolicyStore
 from .purge_client import MediaRepoPurgeClient
 from .synapse_admin_client import SynapseAdminClient
@@ -59,6 +60,7 @@ def build_top_rooms_report(
     store: PolicyStore,
     server_name: str,
     top_n: int,
+    media_index: MediaIndex | None = None,
 ) -> str:
     """Returns the full report text: one line per room (room ID, human
     name, total media size, current retention policy, oldest media file's
@@ -76,14 +78,22 @@ def build_top_rooms_report(
         mxcs = synapse_admin.get_room_media_mxcs(room_id)
         if not mxcs:
             continue
-        usage = purge_client.get_usage_for_mxcs(mxcs)
-        if not usage:
-            continue
-        total_bytes = sum(int(v.get("size_bytes", 0)) for v in usage.values())
+        if media_index is not None:
+            # Cached: only never-seen files are asked about.
+            summary = media_index.refresh_room(room_id, mxcs)
+            if summary is None:
+                continue
+            total_bytes = summary.total_bytes
+            oldest_ts = summary.oldest_ts
+        else:
+            usage = purge_client.get_usage_for_mxcs(mxcs)
+            if not usage:
+                continue
+            total_bytes = sum(int(v.get("size_bytes", 0)) for v in usage.values())
+            creation_timestamps = [int(v["created_ts"]) for v in usage.values() if v.get("created_ts")]
+            oldest_ts = min(creation_timestamps) if creation_timestamps else None
         if total_bytes <= 0:
             continue
-        creation_timestamps = [int(v["created_ts"]) for v in usage.values() if v.get("created_ts")]
-        oldest_ts = min(creation_timestamps) if creation_timestamps else None
         room_sizes.append(
             {
                 "room_id": room_id,

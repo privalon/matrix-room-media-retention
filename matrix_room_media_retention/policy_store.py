@@ -37,6 +37,17 @@ CREATE TABLE IF NOT EXISTS purge_audit_log (
     dry_run INTEGER NOT NULL
 );
 
+-- Immutable per-file facts (size, upload time) already learned from
+-- matrix-media-repo, so neither the report nor the scheduler ever asks
+-- about the same file twice. One row per (room, mxc).
+CREATE TABLE IF NOT EXISTS media_cache (
+    room_id TEXT NOT NULL,
+    mxc TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    created_ts INTEGER,
+    PRIMARY KEY (room_id, mxc)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -93,6 +104,35 @@ class PolicyStore:
         self._conn.execute(
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
+        )
+        self._conn.commit()
+
+    def cache_get_room(self, room_id: str) -> dict[str, tuple[int, int | None]]:
+        rows = self._conn.execute(
+            "SELECT mxc, size_bytes, created_ts FROM media_cache WHERE room_id = ?", (room_id,)
+        ).fetchall()
+        return {mxc: (size, created) for mxc, size, created in rows}
+
+    def cache_put(self, room_id: str, entries: dict[str, tuple[int, int | None]]) -> None:
+        if not entries:
+            return
+        self._conn.executemany(
+            "INSERT INTO media_cache (room_id, mxc, size_bytes, created_ts) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(room_id, mxc) DO UPDATE SET size_bytes = excluded.size_bytes, created_ts = excluded.created_ts",
+            [(room_id, mxc, size, created) for mxc, (size, created) in entries.items()],
+        )
+        self._conn.commit()
+
+    def cache_drop(self, room_id: str, mxcs: list[str]) -> None:
+        if not mxcs:
+            return
+        self._conn.executemany("DELETE FROM media_cache WHERE room_id = ? AND mxc = ?", [(room_id, m) for m in mxcs])
+        self._conn.commit()
+
+    def cache_drop_older_than(self, room_id: str, before_ts_ms: int) -> None:
+        self._conn.execute(
+            "DELETE FROM media_cache WHERE room_id = ? AND created_ts IS NOT NULL AND created_ts < ?",
+            (room_id, before_ts_ms),
         )
         self._conn.commit()
 

@@ -28,6 +28,7 @@ from .duration import InvalidDurationError, format_duration_seconds, parse_durat
 from .media_size_report import build_top_rooms_report
 from .policy_store import PolicyStore
 from .purge_client import MediaRepoPurgeClient
+from .media_index import MediaIndex
 from .synapse_admin_client import SynapseAdminClient
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,10 @@ class MediaRetentionBot:
         # token -- see synapse_admin_client.py's own docstring for why
         # there's no separate admin credential).
         self._synapse_admin: SynapseAdminClient | None = None
+        # Shared with the scheduler (main.py): cached per-file sizes/dates.
+        self.media_index = MediaIndex(
+            store=store, purge_client=purge_client, synapse_provider=lambda: self._synapse_admin
+        )
 
     async def login_and_sync_forever(self) -> None:
         login_response = await self._client.login(self._config.bot_password)
@@ -360,6 +365,7 @@ class MediaRetentionBot:
             store=self._store,
             server_name=server_name,
             top_n=top_n,
+            media_index=self.media_index,
         )
 
     async def maybe_send_monthly_report(self) -> None:

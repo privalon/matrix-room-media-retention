@@ -104,9 +104,20 @@ class SynapseAdminClient:
         column at all, so this room-to-media mapping only ever exists on
         the homeserver side. Returns an empty list on any failure (missing
         room, no media, lookup error) rather than raising."""
+        mxcs = self.try_get_room_media_mxcs(room_id)
+        return mxcs if mxcs is not None else []
+
+    def try_get_room_media_mxcs(self, room_id: str) -> list[str] | None:
+        """Like get_room_media_mxcs(), but returns None (not []) when the
+        lookup itself failed, so callers that make decisions from an empty
+        result (e.g. "nothing to purge") can tell a failure from a room that
+        genuinely has no media."""
         url = f"{self._base_url}/_synapse/admin/v1/room/{room_id}/media"
-        response = requests.get(url, headers=self._headers(), timeout=self._timeout_seconds)
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=self._timeout_seconds)
+        except requests.RequestException:
+            return None
         if response.status_code != 200:
-            return []
+            return None
         body = response.json()
         return list(body.get("local", [])) + list(body.get("remote", []))
