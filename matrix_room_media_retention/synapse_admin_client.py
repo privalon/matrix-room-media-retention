@@ -121,3 +121,32 @@ class SynapseAdminClient:
             return None
         body = response.json()
         return list(body.get("local", [])) + list(body.get("remote", []))
+
+    def get_room_member_names(self, room_id: str) -> list[str]:
+        """Display names of the room's joined members, from the same
+        admin room-state endpoint `get_room_power_levels()` uses (no
+        membership needed, no extra per-user lookups). Falls back to the
+        MXID localpart for members without a display name. Bridge/service
+        bots (localpart ending in "bot", e.g. `@instagrambot`) are left out
+        -- they are in every bridged room and say nothing about which chat
+        it is. Returns [] on any failure."""
+        url = f"{self._base_url}/_synapse/admin/v1/rooms/{room_id}/state"
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=self._timeout_seconds)
+        except requests.RequestException:
+            return []
+        if response.status_code != 200:
+            return []
+        names: list[str] = []
+        for event in response.json().get("state", []):
+            if event.get("type") != "m.room.member":
+                continue
+            content = event.get("content") or {}
+            if content.get("membership") != "join":
+                continue
+            user_id = event.get("state_key") or ""
+            localpart = user_id.removeprefix("@").split(":", 1)[0]
+            if localpart.endswith("bot"):
+                continue
+            names.append(content.get("displayname") or localpart or user_id)
+        return names

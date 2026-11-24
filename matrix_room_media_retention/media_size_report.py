@@ -53,6 +53,26 @@ def _policy_text(store: PolicyStore, room_id: str) -> str:
     return f"retain {format_duration_seconds(policy.retain_seconds)}"
 
 
+_MAX_LABEL_MEMBERS = 4
+
+
+def _room_label(room: dict, synapse_admin: SynapseAdminClient) -> str:
+    """Human-readable identification: the room's name if it has one, else
+    its canonical alias, else (typically a DM or a bridged 1:1 chat) the
+    display names of its members, so an unnamed room can still be told
+    apart without looking its ID up in the admin UI."""
+    if room.get("name"):
+        return room["name"]
+    if room.get("canonical_alias"):
+        return room["canonical_alias"]
+    members = synapse_admin.get_room_member_names(room["room_id"])
+    if not isinstance(members, list) or not members:
+        return "(no name)"
+    shown = ", ".join(members[:_MAX_LABEL_MEMBERS])
+    extra = len(members) - _MAX_LABEL_MEMBERS
+    return f"unnamed chat: {shown}" + (f" +{extra} more" if extra > 0 else "")
+
+
 def build_top_rooms_report(
     *,
     synapse_admin: SynapseAdminClient,
@@ -97,7 +117,7 @@ def build_top_rooms_report(
         room_sizes.append(
             {
                 "room_id": room_id,
-                "name": room.get("name") or "(no name)",
+                "room": room,
                 "total_bytes": total_bytes,
                 "oldest_ts": oldest_ts,
             }
@@ -105,6 +125,10 @@ def build_top_rooms_report(
 
     room_sizes.sort(key=lambda r: r["total_bytes"], reverse=True)
     top = room_sizes[:top_n]
+    # Labels cost one admin call per unnamed room, so only resolve the rooms
+    # that actually appear in the report.
+    for r in top:
+        r["name"] = _room_label(r["room"], synapse_admin)
 
     lines = [f"Top {len(top)} room(s) by media storage size:"]
     for r in top:

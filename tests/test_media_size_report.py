@@ -167,3 +167,35 @@ class TestBuildTopRoomsReport:
         )
         assert "Overall media storage used" in report
         assert "5.0 MB" in report
+
+
+class TestUnnamedRoomLabels:
+    def _report(self, store, room, members=None):
+        synapse_admin = _fake_synapse_admin(rooms=[room], media_by_room={room["room_id"]: ["mxc://example.org/x"]})
+        synapse_admin.get_room_member_names.return_value = members if members is not None else []
+        purge_client = _fake_purge_client(usage_by_mxc={"mxc://example.org/x": {"size_bytes": 500, "created_ts": 1000}})
+        return build_top_rooms_report(
+            synapse_admin=synapse_admin, purge_client=purge_client, store=store,
+            server_name="example.org", top_n=10,
+        ), synapse_admin
+
+    def test_unnamed_room_shows_member_names(self, store):
+        report, _ = self._report(store, {"room_id": "!a:example.org", "name": None}, ["Vasyl (IG)", "Mykola"])
+        assert "(unnamed chat: Vasyl (IG), Mykola)" in report
+
+    def test_alias_used_when_no_name(self, store):
+        report, _ = self._report(store, {"room_id": "!a:example.org", "canonical_alias": "#ops:example.org"})
+        assert "(#ops:example.org)" in report
+
+    def test_named_room_makes_no_member_lookup(self, store):
+        report, admin = self._report(store, {"room_id": "!a:example.org", "name": "Named"})
+        assert "(Named)" in report
+        admin.get_room_member_names.assert_not_called()
+
+    def test_no_members_falls_back_to_no_name(self, store):
+        report, _ = self._report(store, {"room_id": "!a:example.org", "name": ""}, [])
+        assert "((no name))" in report
+
+    def test_many_members_truncated(self, store):
+        report, _ = self._report(store, {"room_id": "!a:example.org"}, ["a", "b", "c", "d", "e", "f"])
+        assert "unnamed chat: a, b, c, d +2 more" in report

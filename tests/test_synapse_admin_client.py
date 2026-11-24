@@ -141,3 +141,29 @@ class TestGetRoomMediaMxcs:
         with mock.patch("matrix_room_media_retention.synapse_admin_client.requests.get") as get:
             get.return_value = _fake_response(404, text="Not found")
             assert client.get_room_media_mxcs("!room:example.org") == []
+
+
+class TestGetRoomMemberNames:
+    def _client(self):
+        from matrix_room_media_retention.synapse_admin_client import SynapseAdminClient
+
+        return SynapseAdminClient(homeserver_url="https://hs.example", access_token="t")
+
+    def test_joined_members_without_bots(self):
+        from unittest import mock
+
+        state = {"state": [
+            {"type": "m.room.member", "state_key": "@instagrambot:hs", "content": {"membership": "join", "displayname": "Instagram bridge bot"}},
+            {"type": "m.room.member", "state_key": "@instagram_1:hs", "content": {"membership": "join", "displayname": "Василь (IG)"}},
+            {"type": "m.room.member", "state_key": "@mykola:hs", "content": {"membership": "join"}},
+            {"type": "m.room.member", "state_key": "@gone:hs", "content": {"membership": "leave", "displayname": "Gone"}},
+            {"type": "m.room.name", "state_key": "", "content": {"name": "x"}},
+        ]}
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=200, json=lambda: state)):
+            assert self._client().get_room_member_names("!r:hs") == ["Василь (IG)", "mykola"]
+
+    def test_failure_returns_empty(self):
+        from unittest import mock
+
+        with mock.patch("requests.get", return_value=mock.Mock(status_code=404)):
+            assert self._client().get_room_member_names("!r:hs") == []
